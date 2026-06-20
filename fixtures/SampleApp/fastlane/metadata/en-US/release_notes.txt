@@ -1,0 +1,4 @@
+What's new in this release:
+- Faster offline sync
+- Redesigned home screen
+- Bug fixes and performance improvements

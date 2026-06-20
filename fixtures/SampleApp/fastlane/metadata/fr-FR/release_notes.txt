@@ -1,0 +1,4 @@
+Nouveautés de cette version :
+- Synchronisation hors ligne plus rapide
+- Écran d'accueil repensé
+- Corrections de bugs et améliorations des performances

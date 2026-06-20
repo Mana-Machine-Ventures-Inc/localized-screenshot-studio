@@ -1,0 +1,24 @@
+[package]
+name = "localized-screenshot-studio"
+version = "0.1.0"
+description = "Localized Screenshot & Release Studio desktop shell"
+authors = ["you"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "lss_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+# Used by the production bundle to embed the engine sidecar.
+custom-protocol = ["tauri/custom-protocol"]

@@ -1,0 +1,16 @@
+// !$*UTF8*$!
+// Minimal pbxproj fixture for the studio's project reader (PRODUCT_NAME / bundle id).
+{
+	archiveVersion = 1;
+	objects = {
+		BUILD0001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				PRODUCT_NAME = "Aurora Notes";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.example.auroranotes";
+			};
+			name = Debug;
+		};
+	};
+	rootObject = ROOT0001;
+}

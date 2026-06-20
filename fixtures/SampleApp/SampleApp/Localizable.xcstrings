@@ -1,0 +1,42 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "home.title" : {
+      "comment" : "Main hero headline on the home screen",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Capture every idea" } },
+        "fr" : { "stringUnit" : { "state" : "translated", "value" : "Capturez chaque idée" } },
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Halte jede Idee fest" } }
+      }
+    },
+    "home.subtitle" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Notes that sync everywhere, instantly and beautifully." } },
+        "fr" : { "stringUnit" : { "state" : "translated", "value" : "Des notes synchronisées partout, instantanément et avec élégance." } },
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Notizen, die sich überall sofort und elegant synchronisieren." } }
+      }
+    },
+    "home.feature1" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Offline-first sync" } },
+        "fr" : { "stringUnit" : { "state" : "translated", "value" : "Synchronisation hors ligne" } },
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Offline-First-Synchronisierung" } }
+      }
+    },
+    "home.feature2" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Rich markdown editor" } },
+        "fr" : { "stringUnit" : { "state" : "translated", "value" : "Éditeur markdown enrichi" } },
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Umfangreicher Markdown-Editor" } }
+      }
+    },
+    "home.feature3" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "End-to-end encryption" } },
+        "fr" : { "stringUnit" : { "state" : "translated", "value" : "Chiffrement de bout en bout" } },
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Ende-zu-Ende-Verschlüsselung" } }
+      }
+    }
+  },
+  "version" : "1.0"
+}

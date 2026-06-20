@@ -1,0 +1,28 @@
+{
+  "name": "@lss/engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local engine: project reader, screenshot text-overlay renderer, Playwright rasterizer, frame compositor, and App Store Connect upload engine.",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "jose": "^5.9.6",
+    "playwright": "^1.49.1",
+    "sharp": "^0.33.5"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

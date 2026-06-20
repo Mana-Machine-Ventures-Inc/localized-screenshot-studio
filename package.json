@@ -1,0 +1,26 @@
+{
+  "name": "localized-screenshot-studio",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Visual desktop studio for generating, framing, and uploading localized App Store screenshots and release notes without fastlane or Xcode UI automation.",
+  "type": "module",
+  "workspaces": [
+    "engine",
+    "ui"
+  ],
+  "scripts": {
+    "postinstall": "playwright install chromium",
+    "engine": "npm run dev --workspace engine",
+    "ui": "npm run dev --workspace ui",
+    "dev": "concurrently -k -n engine,ui -c blue,magenta \"npm run engine\" \"npm run ui\"",
+    "build": "npm run build --workspace engine && npm run build --workspace ui",
+    "slice": "npm run slice --workspace engine",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.0",
+    "concurrently": "^9.1.0"
+  }
+}

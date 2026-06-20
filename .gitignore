@@ -1,0 +1,38 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# builds
+dist/
+build/
+out/
+engine/dist/
+ui/dist/
+
+# tauri / rust
+src-tauri/target/
+src-tauri/gen/
+
+# local studio data (per-project state + generated assets)
+.lss/
+*.local
+
+# playwright
+/test-results/
+/playwright-report/
+/playwright/.cache/
+
+# env / secrets
+.env
+.env.*
+!.env.example
+*.p8
+
+# os / editor
+.DS_Store
+*.log
+npm-debug.log*
+.idea/
+.vscode/*
+!.vscode/extensions.json
