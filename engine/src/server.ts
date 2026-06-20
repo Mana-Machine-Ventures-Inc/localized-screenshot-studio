@@ -106,6 +106,20 @@ export function createServer() {
     }),
   );
 
+  // Toggle whether string edits are written straight into the Xcode catalogs.
+  app.put(
+    "/api/strings/catalog-write",
+    asyncRoute(async (req, res) => {
+      if (!store.isOpen()) throw new Error("No project is open");
+      const { enabled } = req.body as { enabled: boolean };
+      store.setCatalogWrite(enabled);
+      res.json({
+        catalogWrite: store.catalogWriteEnabled(),
+        catalogFile: store.catalogLabel(),
+      });
+    }),
+  );
+
   // ---- Strings ----------------------------------------------------------
   app.get("/api/strings", (_req, res) => {
     if (!store.isOpen()) {
@@ -120,6 +134,8 @@ export function createServer() {
       open: true,
       baseLocale: cfg.baseLocale,
       locales: data?.locales ?? [cfg.baseLocale],
+      catalogWrite: store.catalogWriteEnabled(),
+      catalogFile: store.catalogLabel(),
       strings: store.getMergedStrings().map((s) => ({
         key: s.key,
         comment: s.comment,

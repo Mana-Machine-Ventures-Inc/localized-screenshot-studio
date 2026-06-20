@@ -81,8 +81,16 @@ export const api = {
       open: boolean;
       baseLocale: string;
       locales: string[];
+      catalogWrite?: boolean;
+      catalogFile?: string;
       strings: StringEntry[];
     }>("GET", "/api/strings"),
+  setCatalogWrite: (enabled: boolean) =>
+    req<{ catalogWrite: boolean; catalogFile?: string }>(
+      "PUT",
+      "/api/strings/catalog-write",
+      { enabled },
+    ),
   setString: (key: string, locale: string, value: string) =>
     req<{ ok: boolean }>("PUT", `/api/strings/${encodeURIComponent(key)}`, {
       locale,

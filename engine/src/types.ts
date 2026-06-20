@@ -38,6 +38,16 @@ export interface FontAsset {
   style?: "normal" | "italic";
 }
 
+/** Where a string key physically lives so the studio can write edits back. */
+export interface CatalogRef {
+  kind: "xcstrings" | "strings";
+  /**
+   * For `.xcstrings`: the catalog file. For legacy `.strings`: a representative
+   * locale file (other locales are derived by swapping the `.lproj` segment).
+   */
+  file: string;
+}
+
 /** Result of reading an Xcode project. */
 export interface ProjectData {
   projectPath: string;
@@ -53,6 +63,12 @@ export interface ProjectData {
   strings: LocalizedString[];
   releaseNotes: Record<string, string>;
   tokens: DesignTokens;
+  /** key -> source catalog, used for write-back. Recomputed on every read. */
+  catalogIndex?: Record<string, CatalogRef>;
+  /** default `.xcstrings` catalog that receives brand-new keys, if any. */
+  defaultCatalog?: string;
+  /** a representative legacy `.strings` file (fallback for new keys). */
+  defaultStringsFile?: string;
 }
 
 /** App Store device preset for capture + compose. */
@@ -258,6 +274,12 @@ export interface ProjectConfig {
   addedStrings?: LocalizedString[];
   /** keys hidden/removed inside the studio (base Xcode keys can't be deleted at source). */
   deletedKeys?: string[];
+  /**
+   * When true (default), string edits are written straight back into the
+   * project's `.xcstrings` / `.strings` files instead of staying as a studio
+   * overlay. The studio acts as a live editor of the Xcode catalogs.
+   */
+  writeToCatalog?: boolean;
   /** which localized string keys drive App Store metadata, per platform. */
   metadata?: AppStoreMetadataConfig;
   /** redacted ASC config reference (no secrets persisted to disk). */

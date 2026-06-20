@@ -5,6 +5,7 @@ import {
   projectPaths,
   type ProjectPaths,
 } from "./paths.js";
+import * as catalog from "./catalog/index.js";
 import type {
   AppStoreMetadataConfig,
   AssetCell,
@@ -218,6 +219,70 @@ class Store {
     return cfg.metadata;
   }
 
+  /**
+   * Whether edits should be written straight into the Xcode catalogs. Requires
+   * the project to expose a writable catalog and the config flag to be on
+   * (defaults on for new + existing projects).
+   */
+  catalogWriteEnabled(): boolean {
+    if (this.config?.writeToCatalog === false) return false;
+    return catalog.canWrite(this.data);
+  }
+
+  setCatalogWrite(enabled: boolean): void {
+    const cfg = this.getConfig();
+    cfg.writeToCatalog = enabled;
+    this.save();
+  }
+
+  /** Filename edits are written to, for surfacing in the UI. */
+  catalogLabel(): string | undefined {
+    return catalog.catalogLabel(this.data);
+  }
+
+  // --- in-memory mirrors so reads reflect catalog writes immediately --------
+
+  private dataEntry(key: string): LocalizedString {
+    const data = this.data!;
+    let entry = data.strings.find((s) => s.key === key);
+    if (!entry) {
+      entry = { key, values: {} };
+      data.strings.push(entry);
+    }
+    return entry;
+  }
+
+  private dataSetValue(key: string, locale: string, value: string): void {
+    if (!this.data) return;
+    this.dataEntry(key).values[locale] = value;
+    if (!this.data.locales.includes(locale)) this.data.locales.push(locale);
+  }
+
+  private dataClearLocale(key: string, locale: string): void {
+    const entry = this.data?.strings.find((s) => s.key === key);
+    if (entry) delete entry.values[locale];
+  }
+
+  private dataRemoveKey(key: string): void {
+    if (!this.data) return;
+    this.data.strings = this.data.strings.filter((s) => s.key !== key);
+  }
+
+  /** Drop any studio overlay for a key/locale so the catalog value wins. */
+  private clearOverlay(key: string, locale?: string): void {
+    const cfg = this.config;
+    if (!cfg) return;
+    if (locale === undefined) {
+      if (cfg.stringEdits) delete cfg.stringEdits[key];
+      cfg.addedStrings = cfg.addedStrings?.filter((s) => s.key !== key);
+      cfg.deletedKeys = cfg.deletedKeys?.filter((k) => k !== key);
+    } else {
+      if (cfg.stringEdits?.[key]) delete cfg.stringEdits[key][locale];
+      const added = cfg.addedStrings?.find((s) => s.key === key);
+      if (added) delete added.values[locale];
+    }
+  }
+
   /** Base (Xcode) strings merged with studio edits + studio-added strings. */
   getMergedStrings(): LocalizedString[] {
     const cfg = this.config;
@@ -262,6 +327,12 @@ class Store {
 
   /** Set/override a single string value for a locale. */
   setStringValue(key: string, locale: string, value: string): void {
+    if (this.catalogWriteEnabled() && catalog.setValue(this.data!, key, locale, value)) {
+      this.dataSetValue(key, locale, value);
+      this.clearOverlay(key, locale);
+      this.save();
+      return;
+    }
     this.writeStringValue(key, locale, value);
     this.save();
   }
@@ -274,6 +345,19 @@ class Store {
   setBaseStringValue(key: string, value: string): void {
     const cfg = this.getConfig();
     const locales = this.data?.locales ?? [cfg.baseLocale];
+    if (this.catalogWriteEnabled() && catalog.setValue(this.data!, key, cfg.baseLocale, value)) {
+      this.dataSetValue(key, cfg.baseLocale, value);
+      this.clearOverlay(key, cfg.baseLocale);
+      for (const locale of [...locales]) {
+        if (locale === cfg.baseLocale) continue;
+        // Drop the stale translation so Xcode (and the studio) flag it missing.
+        catalog.clearLocale(this.data!, key, locale);
+        this.dataClearLocale(key, locale);
+        this.clearOverlay(key, locale);
+      }
+      this.save();
+      return;
+    }
     this.writeStringValue(key, cfg.baseLocale, value);
     for (const locale of locales) {
       if (locale === cfg.baseLocale) continue;
@@ -282,9 +366,15 @@ class Store {
     this.save();
   }
 
-  /** Remove a key from the studio's working set (hidden for base Xcode keys). */
+  /** Remove a key. With catalog write-through this deletes it from the source. */
   deleteString(key: string): void {
     const cfg = this.getConfig();
+    if (this.catalogWriteEnabled() && catalog.removeKey(this.data!, key)) {
+      this.dataRemoveKey(key);
+      this.clearOverlay(key);
+      this.save();
+      return;
+    }
     if (cfg.addedStrings?.some((s) => s.key === key)) {
       cfg.addedStrings = cfg.addedStrings.filter((s) => s.key !== key);
     }
@@ -299,6 +389,17 @@ class Store {
     const cfg = this.getConfig();
     if (cfg.deletedKeys?.includes(key)) {
       cfg.deletedKeys = cfg.deletedKeys.filter((k) => k !== key);
+    }
+    if (
+      this.catalogWriteEnabled() &&
+      catalog.addKey(this.data!, key, cfg.baseLocale, baseValue, comment)
+    ) {
+      const entry = this.dataEntry(key);
+      entry.values[cfg.baseLocale] = baseValue;
+      if (comment) entry.comment = comment;
+      this.clearOverlay(key);
+      this.save();
+      return { key, comment: entry.comment, values: { ...entry.values } };
     }
     cfg.addedStrings = cfg.addedStrings ?? [];
     const existing = cfg.addedStrings.find((s) => s.key === key);

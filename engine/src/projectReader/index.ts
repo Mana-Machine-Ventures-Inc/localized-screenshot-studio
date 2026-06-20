@@ -4,7 +4,7 @@ import { walk } from "./walk.js";
 import { parseXcStrings } from "./xcstrings.js";
 import { localeFromLprojPath, parseStringsFile } from "./legacyStrings.js";
 import { readDesignTokens } from "./assets.js";
-import type { LocalizedString, ProjectData } from "../types.js";
+import type { CatalogRef, LocalizedString, ProjectData } from "../types.js";
 
 /** Resolve the directory that contains the actual sources for an .xcodeproj/.xcworkspace. */
 export function resolveProjectRoot(input: string): string {
@@ -64,13 +64,15 @@ function mergeLegacyStrings(
   root: string,
   strings: LocalizedString[],
   locales: Set<string>,
-): void {
+  catalogIndex: Record<string, CatalogRef>,
+): string | undefined {
   const stringsFiles = walk(root, {
     match: (p) => /Localizable\.strings$/i.test(p),
     maxDepth: 8,
   });
   const byKey = new Map<string, LocalizedString>();
   for (const s of strings) byKey.set(s.key, s);
+  let defaultStringsFile: string | undefined;
 
   for (const file of stringsFiles) {
     const locale = localeFromLprojPath(file);
@@ -85,8 +87,12 @@ function mergeLegacyStrings(
         strings.push(entry);
       }
       if (entry.values[locale] === undefined) entry.values[locale] = value;
+      // Record provenance only if a String Catalog didn't already claim it.
+      catalogIndex[key] ??= { kind: "strings", file };
     }
+    defaultStringsFile ??= file;
   }
+  return defaultStringsFile;
 }
 
 /**
@@ -152,7 +158,10 @@ export function readProject(input: string): ProjectData {
 
   const locales = new Set<string>();
   const strings: LocalizedString[] = [];
+  const catalogIndex: Record<string, CatalogRef> = {};
   let baseLocale = "en";
+  let defaultCatalog: string | undefined;
+  let defaultCatalogKeys = -1;
 
   for (const file of xcstringsFiles) {
     try {
@@ -164,13 +173,24 @@ export function readProject(input: string): ProjectData {
         const existing = byKey.get(s.key);
         if (existing) Object.assign(existing.values, s.values);
         else strings.push(s);
+        catalogIndex[s.key] ??= { kind: "xcstrings", file };
+      }
+      // The richest catalog becomes the home for brand-new keys.
+      if (parsed.strings.length > defaultCatalogKeys) {
+        defaultCatalog = file;
+        defaultCatalogKeys = parsed.strings.length;
       }
     } catch {
       // ignore malformed catalogs
     }
   }
 
-  mergeLegacyStrings(root, strings, locales);
+  const defaultStringsFile = mergeLegacyStrings(
+    root,
+    strings,
+    locales,
+    catalogIndex,
+  );
 
   if (locales.size === 0) locales.add(baseLocale);
 
@@ -188,5 +208,8 @@ export function readProject(input: string): ProjectData {
     strings,
     releaseNotes,
     tokens,
+    catalogIndex,
+    defaultCatalog,
+    defaultStringsFile,
   };
 }

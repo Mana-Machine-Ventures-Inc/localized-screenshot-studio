@@ -11,6 +11,8 @@ export function StringsTab({ reloadToken, onChanged }: Props) {
   const [baseLocale, setBaseLocale] = useState("en");
   const [locales, setLocales] = useState<string[]>([]);
   const [strings, setStrings] = useState<StringEntry[]>([]);
+  const [catalogWrite, setCatalogWrite] = useState(false);
+  const [catalogFile, setCatalogFile] = useState<string | undefined>();
   const [target, setTarget] = useState("");
   const [search, setSearch] = useState("");
   const [missingOnly, setMissingOnly] = useState(false);
@@ -29,7 +31,15 @@ export function StringsTab({ reloadToken, onChanged }: Props) {
     setBaseLocale(r.baseLocale);
     setLocales(r.locales);
     setStrings(r.strings);
+    setCatalogWrite(!!r.catalogWrite);
+    setCatalogFile(r.catalogFile);
     setTarget((t) => t || r.baseLocale);
+  };
+
+  const toggleCatalogWrite = async () => {
+    const r = await api.setCatalogWrite(!catalogWrite);
+    setCatalogWrite(r.catalogWrite);
+    setCatalogFile(r.catalogFile);
   };
 
   useEffect(() => {
@@ -240,6 +250,24 @@ export function StringsTab({ reloadToken, onChanged }: Props) {
         )}
         <button className="primary" onClick={() => setAdding((v) => !v)}>
           + New string
+        </button>
+      </div>
+
+      <div className={`catalog-banner ${catalogWrite ? "live" : "overlay"}`}>
+        {catalogWrite ? (
+          <span>
+            <strong>Editing Xcode strings directly.</strong> Changes are written
+            to <code>{catalogFile ?? "the project's catalogs"}</code> as you
+            edit — commit them in git like any source change.
+          </span>
+        ) : (
+          <span>
+            <strong>Working in studio overlay.</strong> Edits stay inside the
+            studio and don't touch your Xcode catalogs.
+          </span>
+        )}
+        <button className="mini ghost" onClick={() => void toggleCatalogWrite()}>
+          {catalogWrite ? "Switch to overlay" : "Edit Xcode files directly"}
         </button>
       </div>
 
