@@ -176,12 +176,18 @@ export function CompositionsTab({
   const deviceLeft = (stageW - deviceW) / 2;
   const deviceTop = isDevice ? headlineAreaH + (availH - deviceH) / 2 : 0;
   const bezel = isDevice ? Math.max(1, stageW * 0.012) : 0;
-  const radius = isDevice ? deviceW * 0.085 : 0;
   // The /render document is a fixed pointWidth×pointHeight page; scale it to
   // fit inside the (bezel-inset) device area.
   const renderW = preset?.pointWidth ?? 393;
   const renderH = preset?.pointHeight ?? 852;
   const screenScale = renderW > 0 ? (deviceW - bezel * 2) / renderW : 1;
+  // Use the preset's physical corner radius (in points) scaled into preview
+  // pixels — matching the compositor — so an iPad reads as gently rounded
+  // rather than a giant squircle.
+  const screenRadius = isDevice
+    ? (preset?.cornerRadius ?? 24) * screenScale
+    : 0;
+  const radius = isDevice ? screenRadius + bezel : 0;
 
   const headline =
     (comp.headlineKey

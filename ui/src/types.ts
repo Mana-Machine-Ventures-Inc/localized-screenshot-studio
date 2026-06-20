@@ -22,6 +22,7 @@ export interface DevicePreset {
   pixelHeight: number;
   platform: string;
   orientation: "portrait" | "landscape";
+  cornerRadius: number;
 }
 
 export type ScreenKind = "overlay";
