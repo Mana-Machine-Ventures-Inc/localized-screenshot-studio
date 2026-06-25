@@ -303,6 +303,18 @@ export function createServer() {
     }),
   );
 
+  // Per-device-class headline overrides (size / area), keyed by device class.
+  app.put(
+    "/api/compositor/device/:deviceClass",
+    asyncRoute(async (req, res) => {
+      const compositor = store.setDeviceTypography(
+        req.params.deviceClass,
+        req.body ?? {},
+      );
+      res.json({ compositor });
+    }),
+  );
+
   app.delete(
     "/api/screens/:id",
     asyncRoute(async (req, res) => {

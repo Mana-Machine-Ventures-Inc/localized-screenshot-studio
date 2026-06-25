@@ -134,6 +134,12 @@ export interface CompositorConfig {
   headlineLineHeight: number;
   deviceFrame: boolean;
   headlineHeightFraction: number;
+  perDevice?: Record<string, DeviceTypography>;
+}
+
+export interface DeviceTypography {
+  headlineSizePct?: number;
+  headlineHeightFraction?: number;
 }
 
 export type StorePlatform = "ios" | "macos";

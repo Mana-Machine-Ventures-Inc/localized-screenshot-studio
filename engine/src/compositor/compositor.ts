@@ -20,24 +20,105 @@ function escapeXml(s: string): string {
     .replace(/'/g, "&apos;");
 }
 
-/** Naive word wrap by estimated glyph width (good enough for headlines). */
-function wrapText(text: string, fontSize: number, maxWidth: number): string[] {
-  const charWidth = fontSize * 0.56;
-  const maxChars = Math.max(6, Math.floor(maxWidth / charWidth));
-  const words = text.split(/\s+/);
-  const lines: string[] = [];
-  let line = "";
-  for (const word of words) {
-    const candidate = line ? `${line} ${word}` : word;
-    if (candidate.length > maxChars && line) {
-      lines.push(line);
-      line = word;
+// CJK ideographs, kana, and CJK/fullwidth punctuation may wrap between almost
+// any two characters — these scripts don't separate words with spaces. Hangul
+// is intentionally excluded: Korean uses spaces and wraps word-by-word.
+const BREAK_ANYWHERE =
+  /[\u3000-\u303F\u3040-\u30FF\u31F0-\u31FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF00-\uFF60\uFFE0-\uFFEF]/;
+// Characters that must not begin a line (closing brackets, sentence-final
+// punctuation, small kana, prolonged sound mark) — basic kinsoku shori.
+const NO_LINE_START =
+  /[)\]}）］｝〉》」』】〕、。，．・…！？!?,.:;：；ー―〜ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮ｡｣､]/;
+// Characters that must not end a line (opening brackets).
+const NO_LINE_END = /[([{（［｛〈《「『【〔]/;
+
+function glyphWidth(ch: string, fontSize: number): number {
+  if (ch === " ") return fontSize * 0.28;
+  // Full-width CJK glyphs are ~1em; Latin/Cyrillic average ~0.56em.
+  return BREAK_ANYWHERE.test(ch) ? fontSize : fontSize * 0.56;
+}
+
+/**
+ * Word-wrap a headline into at most `maxLines` lines that fit `maxWidth`.
+ *
+ * Latin/Cyrillic/etc. break on spaces; CJK (Chinese, Japanese) has no spaces,
+ * so we allow breaks between individual ideographs/kana while keeping embedded
+ * Latin words intact, then apply light kinsoku rules so a line never starts
+ * with closing punctuation or ends with an opening bracket.
+ */
+function wrapText(
+  text: string,
+  fontSize: number,
+  maxWidth: number,
+  maxLines = 3,
+): string[] {
+  // Tokenize into atoms that must stay intact: whole non-CJK words, plus each
+  // CJK character on its own. `space` marks atoms preceded by whitespace.
+  type Atom = { text: string; space: boolean };
+  const atoms: Atom[] = [];
+  let buf = "";
+  let pendingSpace = false;
+  const flush = () => {
+    if (buf) {
+      atoms.push({ text: buf, space: pendingSpace });
+      buf = "";
+      pendingSpace = false;
+    }
+  };
+  for (const ch of text) {
+    if (/\s/.test(ch)) {
+      flush();
+      pendingSpace = true;
+    } else if (BREAK_ANYWHERE.test(ch)) {
+      flush();
+      atoms.push({ text: ch, space: pendingSpace });
+      pendingSpace = false;
     } else {
-      line = candidate;
+      buf += ch;
     }
   }
-  if (line) lines.push(line);
-  return lines.slice(0, 3);
+  flush();
+
+  const measure = (s: string) =>
+    Array.from(s).reduce((w, ch) => w + glyphWidth(ch, fontSize), 0);
+
+  const lines: string[] = [];
+  let cur = "";
+  let curW = 0;
+  for (const atom of atoms) {
+    const sep = cur && atom.space ? " " : "";
+    const addW = (sep ? glyphWidth(" ", fontSize) : 0) + measure(atom.text);
+    if (cur && curW + addW > maxWidth) {
+      lines.push(cur);
+      cur = atom.text;
+      curW = measure(atom.text);
+    } else {
+      cur += sep + atom.text;
+      curW += addW;
+    }
+  }
+  if (cur) lines.push(cur);
+
+  // Kinsoku: pull a forbidden leading char up to the previous line, and push a
+  // forbidden trailing char (opening bracket) down to the next line.
+  for (let i = 1; i < lines.length; i++) {
+    let guard = 0;
+    while (lines[i] && NO_LINE_START.test(Array.from(lines[i])[0]) && guard++ < 8) {
+      const chars = Array.from(lines[i]);
+      lines[i - 1] += chars.shift();
+      lines[i] = chars.join("");
+    }
+    const prev = Array.from(lines[i - 1]);
+    if (prev.length > 1 && NO_LINE_END.test(prev[prev.length - 1])) {
+      lines[i] = prev.pop()! + lines[i];
+      lines[i - 1] = prev.join("");
+    }
+  }
+
+  if (lines.length <= maxLines) return lines;
+  const kept = lines.slice(0, maxLines);
+  kept[maxLines - 1] = kept[maxLines - 1].replace(/\s*$/, "") + "…";
+  return kept;
 }
 
 function backgroundCss(bg: CompositorConfig["background"]): string {
@@ -161,6 +242,34 @@ export async function compose(opts: ComposeOptions): Promise<string> {
   return opts.outPath;
 }
 
+/**
+ * Resolve the concrete CompositorConfig for a screen + preset by layering the
+ * three scopes:
+ *   - universal  (global): font family/weight/style, tracking, line-height
+ *   - per device class    : headline size + headline area (by preset.platform)
+ *   - per screen          : background + headline color
+ */
+export function resolveCompositor(
+  comp: ScreenComposition,
+  preset: DevicePreset,
+): CompositorConfig {
+  const g = store.getConfig().compositor;
+  const dev = g.perDevice?.[preset.platform] ?? {};
+  return {
+    ...g,
+    // per-device-class
+    headlineSizePct: dev.headlineSizePct ?? g.headlineSizePct,
+    headlineHeightFraction:
+      dev.headlineHeightFraction ??
+      comp.headlineHeightFraction ??
+      g.headlineHeightFraction,
+    // per-screen
+    background: comp.background,
+    headlineColor: comp.headlineColor ?? g.headlineColor,
+    deviceFrame: true,
+  };
+}
+
 /** Resolve a screen's effective composition, falling back to the global one. */
 export function effectiveComposition(screen: ScreenTemplate): ScreenComposition {
   if (screen.composition) return screen.composition;
@@ -226,13 +335,7 @@ export async function composeCell(cell: AssetCell): Promise<AssetCell> {
   if (comp.mode === "passthrough") {
     await passthrough(cell.capturePath, outPath, preset);
   } else {
-    const g = store.getConfig().compositor;
-    const config: CompositorConfig = {
-      ...g,
-      background: comp.background,
-      deviceFrame: true,
-      headlineHeightFraction: comp.headlineHeightFraction,
-    };
+    const config = resolveCompositor(comp, preset);
     await compose({
       capturePath: cell.capturePath,
       outPath,

@@ -929,6 +929,225 @@ table.matrix th.rowhead {
   gap: 10px;
   align-items: flex-end;
 }
+/* --- confirm dialog + generation error banner --------------------------- */
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 6, 11, 0.62);
+  display: grid;
+  place-items: center;
+  z-index: 50;
+}
+.confirm-card {
+  background: #161922;
+  border: 1px solid #2a2f3c;
+  border-radius: 12px;
+  padding: 22px 24px;
+  max-width: 420px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+}
+.confirm-card h3 {
+  margin: 0 0 8px;
+}
+.confirm-card p {
+  margin: 0 0 18px;
+  color: #c2c8d4;
+  line-height: 1.45;
+}
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.gen-error-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 10px 0 0;
+  padding: 8px 12px;
+  border: 1px solid #5a2330;
+  background: #2a141a;
+  border-radius: 8px;
+}
+.gen-error-banner .error-text {
+  flex: 1;
+}
+
+/* --- engine connection screen ------------------------------------------ */
+.connect-screen {
+  display: grid;
+  place-items: center;
+  height: 100vh;
+  width: 100vw;
+}
+.connect-card {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 28px 34px;
+}
+.connect-card .brand {
+  margin-bottom: 6px;
+}
+.connect-card p {
+  margin: 0;
+}
+.connect-card code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+.connect-card button {
+  margin-top: 8px;
+}
+
+/* --- custom color picker ------------------------------------------------ */
+.cp {
+  position: relative;
+  display: inline-block;
+}
+.cp-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface, #11151c);
+  cursor: pointer;
+  width: 100%;
+}
+.cp-swatch {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  flex: none;
+}
+.cp-hex {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+.cp-pop {
+  position: absolute;
+  z-index: 60;
+  top: calc(100% + 6px);
+  left: 0;
+  width: 220px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #0d1117;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.cp-sl {
+  position: relative;
+  width: 100%;
+  height: 130px;
+  border-radius: 6px;
+  overflow: hidden;
+  cursor: crosshair;
+  touch-action: none;
+}
+.cp-sl-white {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to right, #fff, rgba(255, 255, 255, 0));
+}
+.cp-sl-black {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top, #000, rgba(0, 0, 0, 0));
+}
+.cp-sl-thumb {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+.cp-hue {
+  width: 100%;
+  margin: 0;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 12px;
+  border-radius: 6px;
+  background: linear-gradient(
+    to right,
+    #f00 0%,
+    #ff0 17%,
+    #0f0 33%,
+    #0ff 50%,
+    #00f 67%,
+    #f0f 83%,
+    #f00 100%
+  );
+}
+.cp-hue::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+}
+.cp-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 6px;
+}
+.cp-fields label {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  font-size: 10px;
+  color: var(--muted, #8b949e);
+}
+.cp-fields input {
+  width: 100%;
+  text-align: center;
+  padding: 3px 2px;
+  font-size: 11px;
+}
+.cp-hexrow {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.cp-hexinput {
+  flex: 1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  padding: 4px 6px;
+}
+.cp-eyedrop {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface, #11151c);
+  color: var(--text, #e6edf3);
+  cursor: pointer;
+  flex: none;
+}
+.cp-eyedrop:hover {
+  border-color: var(--accent, #1f6feb);
+}
+
 .catalog-banner {
   display: flex;
   align-items: center;
@@ -1160,7 +1379,29 @@ table.matrix th.rowhead {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: #fff;
+  background: #0b0d12;
+}
+
+/* scope badges in the Compositions controls */
+.tag.scope-screen,
+.tag.scope-device,
+.tag.scope-all {
+  margin-left: 6px;
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.tag.scope-screen {
+  background: rgba(210, 153, 34, 0.18);
+  color: #e3b341;
+}
+.tag.scope-device {
+  background: rgba(63, 185, 80, 0.18);
+  color: #3fb950;
+}
+.tag.scope-all {
+  background: rgba(88, 166, 255, 0.18);
+  color: #58a6ff;
 }
 
 /* ===== Generate tab ===== */
@@ -1227,6 +1468,46 @@ table.matrix th.rowhead {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+.gen-thumb.clickable {
+  cursor: zoom-in;
+}
+.gen-thumb.clickable:hover {
+  border-color: var(--accent, #1f6feb);
+}
+
+/* full-size lightbox */
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.82);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  cursor: zoom-out;
+}
+.lightbox img {
+  max-width: 95vw;
+  max-height: 92vh;
+  object-fit: contain;
+  border-radius: 8px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.7);
+  cursor: default;
+}
+.lightbox-close {
+  position: absolute;
+  top: 18px;
+  right: 22px;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  font-size: 16px;
+  cursor: pointer;
 }
 .gen-thumb img {
   max-width: 100%;

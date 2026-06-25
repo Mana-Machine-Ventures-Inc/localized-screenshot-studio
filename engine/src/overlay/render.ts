@@ -140,6 +140,10 @@ export function renderOverlayHtml(
         `top:${top}%`,
         `width:${width}%`,
         `height:${height}%`,
+        // Keep box alignment physical so a "left" pick is always the left edge,
+        // even for RTL locales. (justify-content otherwise follows `direction`
+        // and would silently flip Arabic/Hebrew to the opposite side.)
+        `direction:ltr`,
         `justify-content:${ALIGN_TO_JUSTIFY[t.align] ?? "flex-start"}`,
         `align-items:${VALIGN_TO_ALIGN[t.valign] ?? "center"}`,
       ].join(";");
@@ -152,6 +156,9 @@ export function renderOverlayHtml(
         `letter-spacing:${t.letterSpacing}em`,
         `color:${t.color}`,
         `text-align:${t.align}`,
+        // The text itself still shapes/reads in its natural script direction;
+        // only the box alignment above is forced physical.
+        `direction:${isRtl ? "rtl" : "ltr"}`,
         `white-space:${whiteSpace}`,
         `max-width:100%`,
         `max-height:100%`,

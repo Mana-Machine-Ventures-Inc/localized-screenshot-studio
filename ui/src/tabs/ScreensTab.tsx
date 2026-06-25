@@ -12,6 +12,8 @@ interface Props {
   reload: () => Promise<void>;
   selectedId?: string;
   onSelect: (id: string | undefined) => void;
+  previewLocale: string;
+  onPreviewLocale: (locale: string) => void;
 }
 
 function readFileAsDataUrl(file: File): Promise<string> {
@@ -31,6 +33,8 @@ export function ScreensTab({
   reload,
   selectedId,
   onSelect,
+  previewLocale,
+  onPreviewLocale,
 }: Props) {
   const overlayScreens = config.screens.filter((s) => s.kind === "overlay");
   const [showUpload, setShowUpload] = useState(false);
@@ -171,6 +175,8 @@ export function ScreensTab({
             initialPreset={activePreset}
             embedded
             onChanged={() => reload().catch(() => {})}
+            previewLocale={previewLocale}
+            onPreviewLocale={onPreviewLocale}
           />
         ) : (
           <div className="empty-state">

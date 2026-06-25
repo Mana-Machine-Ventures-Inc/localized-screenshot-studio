@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, overlayImageUrl, type ProjectFont } from "../api";
 import { FontPicker } from "./FontPicker";
+import { ColorPicker } from "./ColorPicker";
 import type {
   DevicePreset,
   ProjectSummary,
@@ -19,6 +20,9 @@ interface Props {
   /** Render inside a tab (fills parent) instead of as a full-screen overlay. */
   embedded?: boolean;
   onClose?: () => void;
+  /** shared preview language (persists across tabs). */
+  previewLocale?: string;
+  onPreviewLocale?: (locale: string) => void;
 }
 
 type Handle = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
@@ -90,6 +94,8 @@ export function OverlayEditor({
   onChanged,
   embedded,
   onClose,
+  previewLocale: previewLocaleProp,
+  onPreviewLocale,
 }: Props) {
   const overlay = screen.overlay!;
   const sourceLocale = overlay.sourceLocale;
@@ -104,7 +110,8 @@ export function OverlayEditor({
     w: number;
     h: number;
   } | null>(null);
-  const [previewLocale, setPreviewLocale] = useState(sourceLocale);
+  const [localPreviewLocale, setLocalPreviewLocale] = useState(sourceLocale);
+  const previewLocale = previewLocaleProp || localPreviewLocale;
   const [presetId, setPresetId] = useState(
     screen.presetIds[0] ?? initialPreset,
   );
@@ -555,7 +562,8 @@ export function OverlayEditor({
   const switchPreview = (locale: string) => {
     // Language is purely a display asset over one canonical layout — switching
     // never changes geometry, so there's nothing to persist here.
-    setPreviewLocale(locale);
+    if (onPreviewLocale) onPreviewLocale(locale);
+    else setLocalPreviewLocale(locale);
   };
 
   const rebuild = async () => {
@@ -854,12 +862,9 @@ export function OverlayEditor({
               <div className="row" style={{ gap: 8 }}>
                 <div className="field" style={{ flex: 1 }}>
                   <label>Color</label>
-                  <input
-                    type="color"
+                  <ColorPicker
                     value={selected.type.color}
-                    onChange={(e) =>
-                      patchType(selected.id, { color: e.target.value })
-                    }
+                    onChange={(hex) => patchType(selected.id, { color: hex })}
                   />
                 </div>
                 <div className="field" style={{ flex: 1 }}>
@@ -954,12 +959,9 @@ export function OverlayEditor({
                 </div>
                 <div className="field" style={{ flex: 1 }}>
                   <label>Fill</label>
-                  <input
-                    type="color"
+                  <ColorPicker
                     value={selected.mask.color}
-                    onChange={(e) =>
-                      patchMask(selected.id, { color: e.target.value })
-                    }
+                    onChange={(hex) => patchMask(selected.id, { color: hex })}
                   />
                 </div>
                 <div className="field" style={{ flex: 1 }}>

@@ -5,15 +5,23 @@ import type { StringEntry } from "../types";
 interface Props {
   reloadToken: number;
   onChanged: () => void;
+  previewLocale: string;
+  onPreviewLocale: (locale: string) => void;
 }
 
-export function StringsTab({ reloadToken, onChanged }: Props) {
+export function StringsTab({
+  reloadToken,
+  onChanged,
+  previewLocale,
+  onPreviewLocale,
+}: Props) {
   const [baseLocale, setBaseLocale] = useState("en");
   const [locales, setLocales] = useState<string[]>([]);
   const [strings, setStrings] = useState<StringEntry[]>([]);
   const [catalogWrite, setCatalogWrite] = useState(false);
   const [catalogFile, setCatalogFile] = useState<string | undefined>();
-  const [target, setTarget] = useState("");
+  const target = previewLocale || baseLocale;
+  const setTarget = onPreviewLocale;
   const [search, setSearch] = useState("");
   const [missingOnly, setMissingOnly] = useState(false);
   const [adding, setAdding] = useState(false);
@@ -33,7 +41,7 @@ export function StringsTab({ reloadToken, onChanged }: Props) {
     setStrings(r.strings);
     setCatalogWrite(!!r.catalogWrite);
     setCatalogFile(r.catalogFile);
-    setTarget((t) => t || r.baseLocale);
+    if (!previewLocale) onPreviewLocale(r.baseLocale);
   };
 
   const toggleCatalogWrite = async () => {

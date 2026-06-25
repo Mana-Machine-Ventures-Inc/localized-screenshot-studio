@@ -49,8 +49,24 @@ try {
   console.warn(`[engine] could not reopen last project: ${String(err)}`);
 }
 
-const server = app.listen(PORT, () => {
+// Bind the IPv4 loopback explicitly so the dev proxy / packaged webview (which
+// reach the engine over 127.0.0.1) always connect, and surface port conflicts
+// with an actionable message instead of an unhandled crash.
+const server = app.listen(PORT, "127.0.0.1", () => {
   console.log(`[engine] listening on http://127.0.0.1:${PORT}`);
+});
+
+server.on("error", (err: NodeJS.ErrnoException) => {
+  if (err.code === "EADDRINUSE") {
+    console.error(
+      `[engine] port ${PORT} is already in use — another engine is probably running.\n` +
+        `[engine]   stop it:           lsof -ti tcp:${PORT} | xargs kill\n` +
+        `[engine]   or use a new port: LSS_PORT=8788 npm run dev`,
+    );
+  } else {
+    console.error(`[engine] failed to start: ${err.message}`);
+  }
+  process.exit(1);
 });
 
 async function shutdown() {

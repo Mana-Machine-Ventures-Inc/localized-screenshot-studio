@@ -18,9 +18,23 @@ declare global {
   }
 }
 
-// In dev the Vite proxy forwards /api and /render to the engine. In a packaged
-// Tauri build, window.__LSS_ENGINE__ points at the local engine sidecar.
-export const API_BASE = window.__LSS_ENGINE__ ?? "";
+/**
+ * Where the engine lives, resolved at load time:
+ *  - explicit `window.__LSS_ENGINE__` override always wins;
+ *  - in a browser / `tauri dev` session the page is served over http(s) by Vite,
+ *    which proxies /api, /render and /overlay to the engine — relative URLs work;
+ *  - in a packaged Tauri app the UI loads from the `tauri://` custom scheme with
+ *    no proxy, so we talk to the local engine directly (CORS is open on it).
+ */
+function resolveApiBase(): string {
+  if (window.__LSS_ENGINE__) return window.__LSS_ENGINE__;
+  const httpServed =
+    (location.protocol === "http:" || location.protocol === "https:") &&
+    location.hostname !== "tauri.localhost";
+  return httpServed ? "" : "http://127.0.0.1:8787";
+}
+
+export const API_BASE = resolveApiBase();
 
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
@@ -123,6 +137,15 @@ export const api = {
     ),
   setCompositor: (patch: Partial<CompositorConfig>) =>
     req<{ compositor: CompositorConfig }>("PUT", "/api/compositor", patch),
+  setDeviceTypography: (
+    deviceClass: string,
+    patch: { headlineSizePct?: number; headlineHeightFraction?: number },
+  ) =>
+    req<{ compositor: CompositorConfig }>(
+      "PUT",
+      `/api/compositor/device/${encodeURIComponent(deviceClass)}`,
+      patch,
+    ),
   setComposition: (screenId: string, composition: ScreenComposition) =>
     req<{ screen: ScreenTemplate }>(
       "PUT",

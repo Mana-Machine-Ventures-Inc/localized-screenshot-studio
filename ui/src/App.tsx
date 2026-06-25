@@ -36,7 +36,12 @@ export function App() {
   const [job, setJob] = useState<UploadJob | null>(null);
   const [tab, setTab] = useState<Tab>("Project");
   const [tick, setTick] = useState(0);
+  const [connectFailed, setConnectFailed] = useState(false);
+  const [connectTick, setConnectTick] = useState(0);
   const [selectedScreenId, setSelectedScreenId] = useState<string>();
+  // Preview language shared across Strings/Screens/Compositions so a string can
+  // be followed from edit → screen → composed without re-picking it each tab.
+  const [previewLocale, setPreviewLocale] = useState<string>("");
 
   const config = project?.open ? project.config : undefined;
 
@@ -67,6 +72,14 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config]);
 
+  // Default the shared preview language to the project's base locale once known.
+  useEffect(() => {
+    if (!previewLocale && summary?.locales?.length) {
+      setPreviewLocale(summary.baseLocale ?? summary.locales[0]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [summary]);
+
   async function reload() {
     const p = await api.getProject();
     setProject(p);
@@ -77,23 +90,42 @@ export function App() {
     setTick((t) => t + 1);
   }
 
+  // Connect to the engine, retrying while it's still booting (it can start a
+  // moment after the UI in `npm run dev`). Never leave the user stuck on a
+  // dead "Connecting…" screen — fall back to a manual retry.
   useEffect(() => {
-    api.getPresets().then(setPresets).catch(() => {});
-    api
-      .ascStatus()
-      .then((s) => setHasCreds(s.hasCredentials))
-      .catch(() => {});
-    reload()
-      .then(() => {
+    let cancelled = false;
+    let attempts = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    setConnectFailed(false);
+    const connect = async () => {
+      try {
+        await reload();
+        if (cancelled) return;
+        api.getPresets().then(setPresets).catch(() => {});
+        api
+          .ascStatus()
+          .then((s) => setHasCreds(s.hasCredentials))
+          .catch(() => {});
         // jump to the working tabs once a project is open
         setProject((p) => {
           if (p?.open) setTab("Screens");
           return p;
         });
-      })
-      .catch((e) => setError(String(e)));
+      } catch {
+        if (cancelled) return;
+        attempts += 1;
+        if (attempts < 30) timer = setTimeout(connect, 1000);
+        else setConnectFailed(true);
+      }
+    };
+    void connect();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [connectTick]);
 
   const run = async (label: string, fn: () => Promise<void>) => {
     setBusy(label);
@@ -186,7 +218,38 @@ export function App() {
   };
 
   if (!project) {
-    return <div className="empty-state">Connecting to engine…</div>;
+    return (
+      <div className="connect-screen">
+        <div className="connect-card">
+          <div className="brand">
+            Localized <span>Screenshot</span> Studio
+          </div>
+          {connectFailed ? (
+            <>
+              <p>
+                Couldn't reach the engine
+                {API_BASE ? (
+                  <>
+                    {" "}
+                    at <code>{API_BASE}</code>
+                  </>
+                ) : null}
+                .
+              </p>
+              <p className="hint">
+                Make sure it's running — it starts automatically with{" "}
+                <code>npm run dev</code>.
+              </p>
+              <button className="primary" onClick={() => setConnectTick((t) => t + 1)}>
+                Retry
+              </button>
+            </>
+          ) : (
+            <p>Connecting to engine…</p>
+          )}
+        </div>
+      </div>
+    );
   }
 
   const open = project.open;
@@ -236,7 +299,12 @@ export function App() {
         )}
 
         {tab === "Strings" && open && (
-          <StringsTab reloadToken={tick} onChanged={() => reload().catch(() => {})} />
+          <StringsTab
+            reloadToken={tick}
+            onChanged={() => reload().catch(() => {})}
+            previewLocale={previewLocale}
+            onPreviewLocale={setPreviewLocale}
+          />
         )}
 
         {tab === "Screens" && open && config && summary && (
@@ -248,6 +316,8 @@ export function App() {
             reload={reload}
             selectedId={selectedScreenId}
             onSelect={setSelectedScreenId}
+            previewLocale={previewLocale}
+            onPreviewLocale={setPreviewLocale}
           />
         )}
 
@@ -260,6 +330,8 @@ export function App() {
             reload={reload}
             selectedId={selectedScreenId}
             onSelect={setSelectedScreenId}
+            previewLocale={previewLocale}
+            onPreviewLocale={setPreviewLocale}
           />
         )}
 

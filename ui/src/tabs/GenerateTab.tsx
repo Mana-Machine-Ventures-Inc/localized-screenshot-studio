@@ -38,8 +38,28 @@ export function GenerateTab({ config, summary, presets, reload }: Props) {
   const presetOf = (id: string) => presets.find((p) => p.id === id);
 
   const [active, setActive] = useState<ActiveJob | null>(null);
+  const [lightbox, setLightbox] = useState<string | null>(null);
+  const [genError, setGenError] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<{
+    sel: CellSelector;
+    count: number;
+    label: string;
+  } | null>(null);
   const cancelRef = useRef(false);
   const aliveRef = useRef(true);
+
+  // Close the lightbox / confirm dialog on Escape.
+  useEffect(() => {
+    if (!lightbox && !pendingDelete) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setLightbox(null);
+        setPendingDelete(null);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [lightbox, pendingDelete]);
 
   // Leaving the tab cancels any in-flight generation.
   useEffect(() => {
@@ -70,6 +90,7 @@ export function GenerateTab({ config, summary, presets, reload }: Props) {
   const runCells = async (work: WorkItem[], scope: string) => {
     if (active || !work.length) return;
     cancelRef.current = false;
+    setGenError(null);
     setActive({ scope, total: work.length, done: 0 });
     try {
       for (let i = 0; i < work.length; i++) {
@@ -84,9 +105,11 @@ export function GenerateTab({ config, summary, presets, reload }: Props) {
       }
     } catch (e) {
       if (aliveRef.current) {
-        setActive((a) =>
-          a ? { ...a, error: String(e instanceof Error ? e.message : e) } : a,
-        );
+        // Surface the error but always release `active`, otherwise the toolbar
+        // stays stuck and "Delete all"/"Generate all" remain disabled.
+        setGenError(String(e instanceof Error ? e.message : e));
+        setActive(null);
+        await reload();
       }
       return;
     }
@@ -118,15 +141,30 @@ export function GenerateTab({ config, summary, presets, reload }: Props) {
       (c) => c.screenId === sid && c.presetId === pid && isGenerated(c),
     ).length;
 
-  const clear = async (sel: CellSelector, count: number, label: string) => {
+  // Open an in-app confirmation. We can't use window.confirm(): it's a no-op in
+  // the Tauri (WKWebView) window, which silently skipped every delete.
+  const clear = (sel: CellSelector, count: number, label: string) => {
     if (!count || active) return;
-    if (
-      !window.confirm(
-        `Delete ${count} generated image${count === 1 ? "" : "s"} for ${label}? You can regenerate them at any time.`,
-      )
-    )
-      return;
+    setPendingDelete({ sel, count, label });
+  };
+
+  const confirmDelete = async () => {
+    if (!pendingDelete) return;
+    const { sel } = pendingDelete;
+    setPendingDelete(null);
     await api.clearCells(sel);
+    await reload();
+  };
+
+  // Single-cell delete: nuke immediately (no confirm) so one click clears it
+  // and the tile flips back to a regenerate button.
+  const clearCell = async (item: WorkItem) => {
+    if (active) return;
+    await api.clearCells({
+      screenId: item.screenId,
+      locales: [item.locale],
+      presetIds: [item.pid],
+    });
     await reload();
   };
 
@@ -191,6 +229,15 @@ export function GenerateTab({ config, summary, presets, reload }: Props) {
           </>
         )}
       </div>
+
+      {genError && (
+        <div className="gen-error-banner">
+          <span className="error-text">Generation failed: {genError}</span>
+          <button className="mini" onClick={() => setGenError(null)}>
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {!screens.length ? (
         <div className="empty-state">
@@ -270,8 +317,10 @@ export function GenerateTab({ config, summary, presets, reload }: Props) {
                               title={`${screen.name} · ${locale}`}
                             >
                               <div
-                                className="gen-thumb"
+                                className={`gen-thumb ${src ? "clickable" : ""}`}
                                 style={{ width: thumbW, height: THUMB_H }}
+                                onClick={() => src && setLightbox(src)}
+                                title={src ? "Click to view full size" : undefined}
                               >
                                 {src ? (
                                   <img src={src} alt={`${screen.name} ${locale}`} />
@@ -286,16 +335,29 @@ export function GenerateTab({ config, summary, presets, reload }: Props) {
                                 >
                                   {cell?.state ?? "—"}
                                 </span>
-                                <button
-                                  className="mini"
-                                  disabled={!!active}
-                                  title="Regenerate this screenshot"
-                                  onClick={() =>
-                                    regenerateCell({ screenId: screen.id, locale, pid })
-                                  }
-                                >
-                                  {cellBusy ? "…" : "↻"}
-                                </button>
+                                {src ? (
+                                  <button
+                                    className="mini danger"
+                                    disabled={!!active}
+                                    title="Delete this screenshot (then regenerate)"
+                                    onClick={() =>
+                                      void clearCell({ screenId: screen.id, locale, pid })
+                                    }
+                                  >
+                                    🗑
+                                  </button>
+                                ) : (
+                                  <button
+                                    className="mini"
+                                    disabled={!!active}
+                                    title="Generate this screenshot"
+                                    onClick={() =>
+                                      regenerateCell({ screenId: screen.id, locale, pid })
+                                    }
+                                  >
+                                    {cellBusy ? "…" : "↻"}
+                                  </button>
+                                )}
                               </div>
                             </div>
                           );
@@ -307,6 +369,44 @@ export function GenerateTab({ config, summary, presets, reload }: Props) {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {lightbox && (
+        <div className="lightbox" onClick={() => setLightbox(null)}>
+          <button
+            className="lightbox-close"
+            onClick={() => setLightbox(null)}
+            title="Close"
+          >
+            ✕
+          </button>
+          <img
+            src={lightbox}
+            alt="full size"
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      )}
+
+      {pendingDelete && (
+        <div className="confirm-overlay" onClick={() => setPendingDelete(null)}>
+          <div className="confirm-card" onClick={(e) => e.stopPropagation()}>
+            <h3>Delete generated images?</h3>
+            <p>
+              Delete {pendingDelete.count} generated image
+              {pendingDelete.count === 1 ? "" : "s"} for{" "}
+              <b>{pendingDelete.label}</b>? You can regenerate them at any time.
+            </p>
+            <div className="confirm-actions">
+              <button className="ghost" onClick={() => setPendingDelete(null)}>
+                Cancel
+              </button>
+              <button className="danger" onClick={() => void confirmDelete()}>
+                Delete
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

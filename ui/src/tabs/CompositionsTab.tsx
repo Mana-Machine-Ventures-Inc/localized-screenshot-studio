@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, renderUrl, type ProjectFont } from "../api";
 import { FontPicker } from "../components/FontPicker";
+import { ColorPicker } from "../components/ColorPicker";
 import type {
   CompositorConfig,
   DevicePreset,
@@ -17,7 +18,15 @@ interface Props {
   reload: () => Promise<void>;
   selectedId?: string;
   onSelect: (id: string | undefined) => void;
+  previewLocale: string;
+  onPreviewLocale: (locale: string) => void;
 }
+
+const DEVICE_CLASS_LABEL: Record<string, string> = {
+  ios: "iPhone",
+  ipados: "iPad",
+  macos: "Mac",
+};
 
 export function CompositionsTab({
   config,
@@ -27,6 +36,8 @@ export function CompositionsTab({
   reload,
   selectedId,
   onSelect,
+  previewLocale,
+  onPreviewLocale,
 }: Props) {
   const screens = config.screens;
   const selected = screens.find((s) => s.id === selectedId) ?? screens[0];
@@ -44,9 +55,8 @@ export function CompositionsTab({
   );
 
   const [comp, setComp] = useState<ScreenComposition>(defaultComp);
-  // Global headline typography — applies to every composition.
+  // Universal headline typography + per-device-class overrides live here.
   const [typo, setTypo] = useState<CompositorConfig>(config.compositor);
-  const [previewLocale, setPreviewLocale] = useState(config.baseLocale);
   const [stringsMap, setStringsMap] = useState<Record<string, Record<string, string>>>(
     {},
   );
@@ -58,6 +68,7 @@ export function CompositionsTab({
   const [wrap, setWrap] = useState({ w: 0, h: 0 });
   const compSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const typoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const deviceSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     setComp(selected?.composition ?? defaultComp);
@@ -99,58 +110,65 @@ export function CompositionsTab({
     );
   }
 
+  // --- persistence by scope ----------------------------------------------
   const persistComp = (next: ScreenComposition) => {
     if (compSaveTimer.current) clearTimeout(compSaveTimer.current);
     compSaveTimer.current = setTimeout(() => {
       api.setComposition(selected.id, next).then(() => reload().catch(() => {}));
     }, 450);
   };
-
   const update = (patch: Partial<ScreenComposition>) => {
     const next = { ...comp, ...patch };
     setComp(next);
     persistComp(next);
   };
-
   const updateBg = (patch: Record<string, unknown>) => {
     const bg = { ...comp.background, ...patch } as ScreenComposition["background"];
     update({ background: bg });
   };
 
-  const persistTypo = (next: CompositorConfig) => {
+  // Universal typography (applies to every composition, every device).
+  const updateUniversal = (patch: Partial<CompositorConfig>) => {
+    setTypo((prev) => ({ ...prev, ...patch }));
     if (typoSaveTimer.current) clearTimeout(typoSaveTimer.current);
     typoSaveTimer.current = setTimeout(() => {
-      api.setCompositor(next).catch(() => {});
+      api.setCompositor(patch).catch(() => {});
     }, 450);
-  };
-  const updateTypo = (patch: Partial<CompositorConfig>) => {
-    const next = { ...typo, ...patch };
-    setTypo(next);
-    persistTypo(next);
-  };
-
-  const createHeadline = async () => {
-    if (!newHeadline.trim()) return;
-    setBusy("Creating headline");
-    try {
-      const res = await api.createHeadline(selected.id, newHeadline.trim());
-      setNewHeadline("");
-      setComp(res.screen.composition ?? comp);
-      await loadStrings();
-      await reload();
-    } finally {
-      setBusy(null);
-    }
   };
 
   // --- preview geometry ---------------------------------------------------
-  // Each screen is previewed at its own device preset, so an iPad frame is
-  // genuinely larger and wider than an iPhone one.
   const presetFor = (presetIds: string[]) =>
     presets.find((p) => p.id === (presetIds[0] ?? activePreset)) ?? presets[0];
   const preset = presetFor(selected.presetIds);
+  const deviceClass = preset?.platform ?? "ios";
+  const deviceLabel = DEVICE_CLASS_LABEL[deviceClass] ?? deviceClass;
 
-  // Scale every device against the largest device in the project, so relative
+  // Resolve scoped values: size/area per device class, color/bg per screen.
+  const sizePct =
+    typo.perDevice?.[deviceClass]?.headlineSizePct ?? typo.headlineSizePct;
+  const areaFraction =
+    typo.perDevice?.[deviceClass]?.headlineHeightFraction ??
+    comp.headlineHeightFraction ??
+    typo.headlineHeightFraction;
+
+  const updateDevice = (patch: {
+    headlineSizePct?: number;
+    headlineHeightFraction?: number;
+  }) => {
+    setTypo((prev) => ({
+      ...prev,
+      perDevice: {
+        ...prev.perDevice,
+        [deviceClass]: { ...prev.perDevice?.[deviceClass], ...patch },
+      },
+    }));
+    if (deviceSaveTimer.current) clearTimeout(deviceSaveTimer.current);
+    deviceSaveTimer.current = setTimeout(() => {
+      api.setDeviceTypography(deviceClass, patch).catch(() => {});
+    }, 450);
+  };
+
+  // Scale every device against the largest device in the project so relative
   // sizes are preserved (the biggest device fills the available panel).
   const maxPointW = Math.max(
     1,
@@ -161,33 +179,31 @@ export function CompositionsTab({
     ...screens.map((s) => presetFor(s.presetIds)?.pointHeight ?? 0),
   );
   const pxPerPoint = Math.min(wrap.w / maxPointW, wrap.h / maxPointH);
-  const stageW = Math.max(0, (preset?.pointWidth ?? 393) * pxPerPoint);
-  const stageH = Math.max(0, (preset?.pointHeight ?? 852) * pxPerPoint);
+  const renderW = preset?.pointWidth ?? 393;
+  const renderH = preset?.pointHeight ?? 852;
+  const stageW = Math.max(0, renderW * pxPerPoint);
+  const stageH = Math.max(0, renderH * pxPerPoint);
 
-  const headlineAreaH = comp.headlineHeightFraction * stageH;
-  const bottomPad = 0.04 * stageH;
+  const isDevice = comp.mode === "device";
+  const headlineAreaH = isDevice ? areaFraction * stageH : 0;
+  const bottomPad = isDevice ? 0.04 * stageH : 0;
   const sidePad = 0.08 * stageW;
   const availH = stageH - headlineAreaH - bottomPad;
   const availW = stageW - sidePad * 2;
-  const fitScale = Math.min(availW / stageW, availH / stageH);
-  const isDevice = comp.mode === "device";
-  const deviceW = isDevice ? stageW * fitScale : stageW;
-  const deviceH = isDevice ? stageH * fitScale : stageH;
-  const deviceLeft = (stageW - deviceW) / 2;
-  const deviceTop = isDevice ? headlineAreaH + (availH - deviceH) / 2 : 0;
-  const bezel = isDevice ? Math.max(1, stageW * 0.012) : 0;
-  // The /render document is a fixed pointWidth×pointHeight page; scale it to
-  // fit inside the (bezel-inset) device area.
-  const renderW = preset?.pointWidth ?? 393;
-  const renderH = preset?.pointHeight ?? 852;
-  const screenScale = renderW > 0 ? (deviceW - bezel * 2) / renderW : 1;
-  // Use the preset's physical corner radius (in points) scaled into preview
-  // pixels — matching the compositor — so an iPad reads as gently rounded
-  // rather than a giant squircle.
-  const screenRadius = isDevice
-    ? (preset?.cornerRadius ?? 24) * screenScale
-    : 0;
-  const radius = isDevice ? screenRadius + bezel : 0;
+  const fitScale = isDevice ? Math.min(availW / stageW, availH / stageH) : 1;
+
+  // The screenshot fills exactly screenW×screenH; the bezel wraps *around* it
+  // (matching the compositor), so the framed device never leaves a gap.
+  const screenW = stageW * fitScale;
+  const screenH = stageH * fitScale;
+  const bezel = isDevice ? Math.max(1, Math.round(stageW * 0.012)) : 0;
+  const outerW = screenW + bezel * 2;
+  const outerH = screenH + bezel * 2;
+  const deviceLeft = (stageW - outerW) / 2;
+  const deviceTop = isDevice ? headlineAreaH + (availH - outerH) / 2 : 0;
+  const screenScale = renderW > 0 ? screenW / renderW : 1;
+  const innerRadius = isDevice ? (preset?.cornerRadius ?? 24) * screenScale : 0;
+  const outerRadius = isDevice ? innerRadius + bezel : 0;
 
   const headline =
     (comp.headlineKey
@@ -203,17 +219,28 @@ export function CompositionsTab({
           background: `linear-gradient(${comp.background.angle}deg, ${comp.background.from}, ${comp.background.to})`,
         };
 
-  const fontPx = typo.headlineSizePct * stageW;
+  const fontPx = sizePct * stageW;
+
+  const createHeadline = async () => {
+    if (!newHeadline.trim()) return;
+    setBusy("Creating headline");
+    try {
+      const res = await api.createHeadline(selected.id, newHeadline.trim());
+      setNewHeadline("");
+      setComp(res.screen.composition ?? comp);
+      await loadStrings();
+      await reload();
+    } finally {
+      setBusy(null);
+    }
+  };
 
   return (
     <div className="tab-content comp-tab">
       <div className="toolbar">
         <div className="field inline">
           <label>Screen</label>
-          <select
-            value={selected.id}
-            onChange={(e) => onSelect(e.target.value)}
-          >
+          <select value={selected.id} onChange={(e) => onSelect(e.target.value)}>
             {screens.map((s) => (
               <option key={s.id} value={s.id}>
                 {s.name}
@@ -225,7 +252,7 @@ export function CompositionsTab({
           <label>Preview language</label>
           <select
             value={previewLocale}
-            onChange={(e) => setPreviewLocale(e.target.value)}
+            onChange={(e) => onPreviewLocale(e.target.value)}
           >
             {summary.locales.map((l) => (
               <option key={l} value={l}>
@@ -267,7 +294,11 @@ export function CompositionsTab({
 
           {comp.mode === "device" && (
             <>
-              <div className="section-title">Background</div>
+              {/* ---- per screen ---- */}
+              <div className="section-title">
+                Background
+                <span className="tag scope-screen">this screen</span>
+              </div>
               <div className="seg" style={{ width: "100%" }}>
                 <button
                   className={comp.background.type === "solid" ? "on" : ""}
@@ -300,31 +331,28 @@ export function CompositionsTab({
               {comp.background.type === "solid" ? (
                 <div className="field">
                   <label>Color</label>
-                  <input
-                    type="color"
+                  <ColorPicker
                     value={comp.background.color}
-                    onChange={(e) => updateBg({ color: e.target.value })}
+                    onChange={(hex) => updateBg({ color: hex })}
                   />
                 </div>
               ) : (
                 <div className="row" style={{ gap: 8 }}>
                   <div className="field" style={{ flex: 1 }}>
                     <label>From</label>
-                    <input
-                      type="color"
+                    <ColorPicker
                       value={comp.background.from}
-                      onChange={(e) => updateBg({ from: e.target.value })}
+                      onChange={(hex) => updateBg({ from: hex })}
                     />
                   </div>
                   <div className="field" style={{ flex: 1 }}>
                     <label>To</label>
-                    <input
-                      type="color"
+                    <ColorPicker
                       value={comp.background.to}
-                      onChange={(e) => updateBg({ to: e.target.value })}
+                      onChange={(hex) => updateBg({ to: hex })}
                     />
                   </div>
-                  <div className="field" style={{ flex: 1 }}>
+                  <div className="field" style={{ width: 70 }}>
                     <label>Angle</label>
                     <input
                       type="number"
@@ -335,7 +363,10 @@ export function CompositionsTab({
                 </div>
               )}
 
-              <div className="section-title">Headline source</div>
+              <div className="section-title">
+                Headline source
+                <span className="tag scope-screen">this screen</span>
+              </div>
               <div className="field">
                 <label>Powered by string</label>
                 <select
@@ -371,26 +402,51 @@ export function CompositionsTab({
               </div>
 
               <div className="field">
-                <label>
-                  Headline area ({Math.round(comp.headlineHeightFraction * 100)}%)
-                </label>
+                <label>Headline color</label>
+                <ColorPicker
+                  value={comp.headlineColor}
+                  onChange={(hex) => update({ headlineColor: hex })}
+                />
+              </div>
+
+              {/* ---- per device class ---- */}
+              <div className="section-title">
+                Headline size
+                <span className="tag scope-device">{deviceLabel}</span>
+              </div>
+              <div className="field">
+                <label>Size ({(sizePct * 100).toFixed(1)}% of width)</label>
+                <input
+                  type="range"
+                  min={0.02}
+                  max={0.1}
+                  step={0.001}
+                  value={sizePct}
+                  onChange={(e) =>
+                    updateDevice({ headlineSizePct: Number(e.target.value) })
+                  }
+                />
+              </div>
+              <div className="field">
+                <label>Headline area ({Math.round(areaFraction * 100)}%)</label>
                 <input
                   type="range"
                   min={0.08}
                   max={0.32}
                   step={0.01}
-                  value={comp.headlineHeightFraction}
+                  value={areaFraction}
                   onChange={(e) =>
-                    update({ headlineHeightFraction: Number(e.target.value) })
+                    updateDevice({
+                      headlineHeightFraction: Number(e.target.value),
+                    })
                   }
                 />
               </div>
 
+              {/* ---- universal ---- */}
               <div className="section-title">
-                Headline style
-                <span className="tag" style={{ marginLeft: 6 }}>
-                  all compositions
-                </span>
+                Headline font
+                <span className="tag scope-all">everywhere</span>
               </div>
               <FontPicker
                 projectFonts={projectFonts}
@@ -399,34 +455,13 @@ export function CompositionsTab({
                 italic={typo.headlineStyle === "italic"}
                 previewText={headline || "Headline preview"}
                 onChange={({ family, weight, italic }) =>
-                  updateTypo({
+                  updateUniversal({
                     headlineFont: family,
                     headlineWeight: weight,
                     headlineStyle: italic ? "italic" : "normal",
                   })
                 }
               />
-              <div className="field">
-                <label>Color</label>
-                <input
-                  type="color"
-                  value={typo.headlineColor}
-                  onChange={(e) => updateTypo({ headlineColor: e.target.value })}
-                />
-              </div>
-              <div className="field">
-                <label>Size ({(typo.headlineSizePct * 100).toFixed(1)}% of width)</label>
-                <input
-                  type="range"
-                  min={0.02}
-                  max={0.1}
-                  step={0.001}
-                  value={typo.headlineSizePct}
-                  onChange={(e) =>
-                    updateTypo({ headlineSizePct: Number(e.target.value) })
-                  }
-                />
-              </div>
               <div className="row" style={{ gap: 8 }}>
                 <div className="field" style={{ flex: 1 }}>
                   <label>Tracking (em)</label>
@@ -435,7 +470,9 @@ export function CompositionsTab({
                     step={0.01}
                     value={typo.headlineLetterSpacing}
                     onChange={(e) =>
-                      updateTypo({ headlineLetterSpacing: Number(e.target.value) })
+                      updateUniversal({
+                        headlineLetterSpacing: Number(e.target.value),
+                      })
                     }
                   />
                 </div>
@@ -446,7 +483,9 @@ export function CompositionsTab({
                     step={0.02}
                     value={typo.headlineLineHeight}
                     onChange={(e) =>
-                      updateTypo({ headlineLineHeight: Number(e.target.value) })
+                      updateUniversal({
+                        headlineLineHeight: Number(e.target.value),
+                      })
                     }
                   />
                 </div>
@@ -473,7 +512,7 @@ export function CompositionsTab({
                   style={{
                     height: headlineAreaH,
                     padding: `0 ${sidePad}px`,
-                    color: typo.headlineColor,
+                    color: comp.headlineColor,
                     fontFamily: typo.headlineFont,
                     fontWeight: typo.headlineWeight,
                     fontStyle: typo.headlineStyle ?? "normal",
@@ -490,16 +529,16 @@ export function CompositionsTab({
                 style={{
                   left: deviceLeft,
                   top: deviceTop,
-                  width: deviceW,
-                  height: deviceH,
-                  borderRadius: radius,
+                  width: isDevice ? outerW : stageW,
+                  height: isDevice ? outerH : stageH,
+                  borderRadius: outerRadius,
                   padding: bezel,
                   background: isDevice ? "#0b0d12" : "transparent",
                 }}
               >
                 <div
                   className="comp-screen-clip"
-                  style={{ borderRadius: Math.max(0, radius - bezel) }}
+                  style={{ borderRadius: innerRadius }}
                 >
                   <iframe
                     key={`${selected.id}-${previewLocale}-${preset?.id}`}

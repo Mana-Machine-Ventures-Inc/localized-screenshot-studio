@@ -10,6 +10,7 @@ import type {
   AppStoreMetadataConfig,
   AssetCell,
   CompositorConfig,
+  DeviceTypography,
   LocalizedString,
   ProjectConfig,
   ProjectData,
@@ -126,6 +127,19 @@ class Store {
   setCompositor(patch: Partial<CompositorConfig>): CompositorConfig {
     const cfg = this.getConfig();
     cfg.compositor = { ...cfg.compositor, ...patch };
+    this.save();
+    return cfg.compositor;
+  }
+
+  /** Override headline size/area for one device class (preset platform). */
+  setDeviceTypography(
+    deviceClass: string,
+    patch: Partial<DeviceTypography>,
+  ): CompositorConfig {
+    const cfg = this.getConfig();
+    const perDevice = { ...(cfg.compositor.perDevice ?? {}) };
+    perDevice[deviceClass] = { ...(perDevice[deviceClass] ?? {}), ...patch };
+    cfg.compositor = { ...cfg.compositor, perDevice };
     this.save();
     return cfg.compositor;
   }

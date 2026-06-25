@@ -227,6 +227,16 @@ export interface AssetCell {
   updatedAt: string;
 }
 
+/**
+ * Per-device-class headline overrides. Keyed by device class (the preset's
+ * platform: "ios" | "ipados" | "macos"). Lets an iPad use a different headline
+ * size / area than an iPhone while sharing the universal typography.
+ */
+export interface DeviceTypography {
+  headlineSizePct?: number;
+  headlineHeightFraction?: number;
+}
+
 export interface CompositorConfig {
   /** global headline typography — applies to every composition. */
   headlineWeight: number;
@@ -248,6 +258,8 @@ export interface CompositorConfig {
   deviceFrame: boolean;
   /** fraction of canvas height reserved for the headline (0..1). */
   headlineHeightFraction: number;
+  /** per-device-class overrides of size + headline area. */
+  perDevice?: Record<string, DeviceTypography>;
 }
 
 export interface AscCredentials {
