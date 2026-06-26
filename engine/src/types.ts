@@ -326,7 +326,10 @@ export interface UploadJobItem {
   presetId?: string;
   /** which App Store platform this item targets. */
   platform?: StorePlatform;
-  kind: "screenshot" | "metadata";
+  /** ASC screenshot set key (locale + this display type); used by "clear". */
+  displayType?: string;
+  /** "clear" deletes the existing screenshots in a set before re-upload. */
+  kind: "screenshot" | "metadata" | "clear";
   state: AssetState;
   attempts: number;
   error?: string;
@@ -339,4 +342,9 @@ export interface UploadJob {
   createdAt: string;
   items: UploadJobItem[];
   done: boolean;
+  /** Set when the run was cancelled; remaining items are left pending. */
+  cancelled?: boolean;
+  /** Top-level failure (e.g. bad credentials, version not found) that aborted
+   * the whole run before/independent of individual items. */
+  error?: string;
 }

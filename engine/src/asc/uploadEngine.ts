@@ -15,7 +15,9 @@ import {
 } from "./metadata.js";
 import {
   commitScreenshot,
+  deleteScreenshot,
   ensureScreenshotSet,
+  listScreenshotsInSet,
   pollScreenshot,
   reserveScreenshot,
   uploadScreenshotParts,
@@ -92,10 +94,24 @@ export function jobEmitter(id: string): EventEmitter | undefined {
   return emitters.get(id);
 }
 
+/**
+ * Request cancellation of a running job. The current in-flight item finishes
+ * (network calls can't be aborted mid-stream), then the run stops and any
+ * remaining items are left pending.
+ */
+export function cancelUploadJob(id: string): UploadJob | undefined {
+  const job = jobs.get(id);
+  if (!job || job.done) return job;
+  job.cancelled = true;
+  emit(job, "cancelling", { id });
+  return job;
+}
+
 async function withRetry<T>(
   fn: () => Promise<T>,
   attempts: number,
   onAttempt?: (n: number, err: unknown) => void,
+  shouldAbort?: () => boolean,
 ): Promise<T> {
   let lastErr: unknown;
   for (let i = 1; i <= attempts; i++) {
@@ -104,6 +120,8 @@ async function withRetry<T>(
     } catch (err) {
       lastErr = err;
       onAttempt?.(i, err);
+      // Stop burning retries (and their backoff) once cancellation is asked for.
+      if (shouldAbort?.()) break;
       if (i < attempts) {
         const delay = Math.min(15000, 500 * 2 ** (i - 1));
         await new Promise((r) => setTimeout(r, delay));
@@ -119,7 +137,14 @@ export interface CreateJobOptions {
   dryRun?: boolean;
   /** restrict to a subset of cells (e.g. retry only failed). */
   cellIds?: string[];
+  /** restrict to specific locales (per-language uploads). */
   locales?: string[];
+  /** restrict to specific device presets (per-device uploads). */
+  presetIds?: string[];
+  /** delete a set's existing screenshots before uploading (default true). */
+  replace?: boolean;
+  /** only clear sets — delete existing screenshots and upload nothing. */
+  clearOnly?: boolean;
 }
 
 function buildItems(opts: CreateJobOptions): UploadJobItem[] {
@@ -128,24 +153,77 @@ function buildItems(opts: CreateJobOptions): UploadJobItem[] {
   const items: UploadJobItem[] = [];
 
   if (opts.kind === "screenshots" || opts.kind === "both") {
+    const replace = opts.clearOnly ? true : opts.replace !== false;
+    const screenOrder = new Map(cfg.screens.map((s, i) => [s.id, i]));
+
     const cells = cfg.cells.filter((c) => {
       if (opts.cellIds && !opts.cellIds.includes(c.id)) return false;
+      if (opts.locales && !opts.locales.includes(c.locale)) return false;
+      if (opts.presetIds && !opts.presetIds.includes(c.presetId)) return false;
       return Boolean(c.composedPath) && fsExists(c.composedPath);
     });
+
+    // One App Store Connect set = (locale × display type). Group cells into
+    // sets so we can delete the set's existing screenshots, then upload its
+    // screens in screen order — per device, in isolation.
+    type SetGroup = {
+      locale: string;
+      platform: StorePlatform;
+      displayType: string;
+      presetId: string;
+      cells: AssetCell[];
+    };
+    const groups = new Map<string, SetGroup>();
     for (const c of cells) {
-      items.push({
-        cellId: c.id,
-        locale: c.locale,
-        presetId: c.presetId,
-        platform: storePlatformForPreset(c.presetId),
-        kind: "screenshot",
-        state: "pending",
-        attempts: 0,
-      });
+      const preset = getPreset(c.presetId);
+      const key = `${c.locale}::${preset.ascDisplayType}`;
+      let g = groups.get(key);
+      if (!g) {
+        g = {
+          locale: c.locale,
+          platform: storePlatformForPreset(c.presetId),
+          displayType: preset.ascDisplayType,
+          presetId: c.presetId,
+          cells: [],
+        };
+        groups.set(key, g);
+      }
+      g.cells.push(c);
+    }
+
+    for (const g of groups.values()) {
+      g.cells.sort(
+        (a, b) =>
+          (screenOrder.get(a.screenId) ?? 0) - (screenOrder.get(b.screenId) ?? 0),
+      );
+      if (replace) {
+        items.push({
+          locale: g.locale,
+          platform: g.platform,
+          presetId: g.presetId,
+          displayType: g.displayType,
+          kind: "clear",
+          state: "pending",
+          attempts: 0,
+        });
+      }
+      if (opts.clearOnly) continue;
+      for (const c of g.cells) {
+        items.push({
+          cellId: c.id,
+          locale: c.locale,
+          presetId: c.presetId,
+          platform: g.platform,
+          displayType: g.displayType,
+          kind: "screenshot",
+          state: "pending",
+          attempts: 0,
+        });
+      }
     }
   }
 
-  if (opts.kind === "metadata" || opts.kind === "both") {
+  if (!opts.clearOnly && (opts.kind === "metadata" || opts.kind === "both")) {
     const locales = opts.locales ?? data?.locales ?? [cfg.baseLocale];
     for (const platform of metadataPlatforms()) {
       for (const locale of locales) {
@@ -199,18 +277,36 @@ function updateCell(cellId: string, patch: Partial<AssetCell>): void {
   store.upsertCell({ ...cell, ...patch, updatedAt: new Date().toISOString() });
 }
 
+/** Human-readable message from any thrown value (drops the "Error:" prefix). */
+function errMsg(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  return String(err);
+}
+
 /** Run an upload job to completion. Resolves when all items are done. */
 export async function runUploadJob(jobId: string): Promise<UploadJob> {
   const job = jobs.get(jobId);
   if (!job) throw new Error(`Unknown job: ${jobId}`);
 
-  if (job.dryRun) {
-    await runDryRun(job);
-    job.done = true;
-    emit(job, "done", { id: job.id });
+  try {
+    if (job.dryRun) {
+      await runDryRun(job);
+      finishJob(job);
+      return job;
+    }
+    await runRealUpload(job);
+    finishJob(job);
+    return job;
+  } catch (err) {
+    // Top-level failure (auth, version lookup, etc.) — record it on the job so
+    // the UI can explain why nothing uploaded, instead of hanging silently.
+    job.error = errMsg(err);
+    finishJob(job);
     return job;
   }
+}
 
+async function runRealUpload(job: UploadJob): Promise<void> {
   const creds = loadCredentials();
   if (!creds) throw new Error("No App Store Connect credentials configured");
 
@@ -233,20 +329,35 @@ export async function runUploadJob(jobId: string): Promise<UploadJob> {
     return ctx;
   };
 
+  const aborted = () => job.cancelled === true;
+
   for (const item of job.items) {
+    if (aborted()) break;
     item.state = "uploading";
     item.attempts += 1;
+    item.error = undefined;
     setItem(job, item);
     if (item.cellId) updateCell(item.cellId, { state: "uploading" });
 
     try {
-      if (item.kind === "metadata") {
+      if (item.kind === "clear") {
+        const group = item.platform ?? "ios";
+        const ctx = await ctxFor(ascPlatform(group));
+        await withRetry(
+          () =>
+            clearScreenshotSet(token, ctx, setCache, item.locale, item.displayType ?? ""),
+          3,
+          (n, err) => emit(job, "retry", { item, n, error: errMsg(err) }),
+          aborted,
+        );
+      } else if (item.kind === "metadata") {
         const group = item.platform ?? "ios";
         const ctx = await ctxFor(ascPlatform(group));
         await withRetry(
           () => uploadMetadata(token, ctx, item.locale, group),
           3,
-          (n, err) => emit(job, "retry", { item, n, error: String(err) }),
+          (n, err) => emit(job, "retry", { item, n, error: errMsg(err) }),
+          aborted,
         );
       } else if (item.cellId) {
         const group = item.platform ?? storePlatformForPreset(item.presetId ?? "");
@@ -254,22 +365,28 @@ export async function runUploadJob(jobId: string): Promise<UploadJob> {
         await withRetry(
           () => uploadScreenshotCell(token, ctx, setCache, item.cellId!),
           3,
-          (n, err) => emit(job, "retry", { item, n, error: String(err) }),
+          (n, err) => emit(job, "retry", { item, n, error: errMsg(err) }),
+          aborted,
         );
       }
       item.state = "verified";
       if (item.cellId) updateCell(item.cellId, { state: "verified", lastError: undefined });
     } catch (err) {
       item.state = "failed";
-      item.error = String(err);
-      if (item.cellId) updateCell(item.cellId, { state: "failed", lastError: String(err) });
+      item.error = errMsg(err);
+      if (item.cellId) updateCell(item.cellId, { state: "failed", lastError: errMsg(err) });
     }
     setItem(job, item);
   }
+}
 
+/** Mark a job complete and notify listeners with the final state. */
+function finishJob(job: UploadJob): void {
   job.done = true;
-  emit(job, "done", { id: job.id });
-  return job;
+  // Send a full snapshot so the UI reflects final item states + cancelled flag,
+  // then a terminal "done" event to close the stream.
+  emit(job, "snapshot", job);
+  emit(job, "done", { id: job.id, cancelled: job.cancelled === true });
 }
 
 interface PlatformCtx {
@@ -297,6 +414,44 @@ async function uploadMetadata(
   });
 }
 
+/** Find-or-create the set for (locale × displayType), cached per run. */
+async function resolveSetId(
+  token: string,
+  ctx: PlatformCtx,
+  setCache: Map<string, string>,
+  locale: string,
+  displayType: string,
+): Promise<string> {
+  const locId = await ensureVersionLocalization(
+    token,
+    ctx.versionId,
+    locale,
+    ctx.locIds,
+  );
+  const setKey = `${locId}:${displayType}`;
+  let setId = setCache.get(setKey);
+  if (!setId) {
+    setId = await ensureScreenshotSet(token, locId, displayType);
+    setCache.set(setKey, setId);
+  }
+  return setId;
+}
+
+/** Delete every screenshot currently in a set, so it can be re-uploaded clean. */
+async function clearScreenshotSet(
+  token: string,
+  ctx: PlatformCtx,
+  setCache: Map<string, string>,
+  locale: string,
+  displayType: string,
+): Promise<void> {
+  const setId = await resolveSetId(token, ctx, setCache, locale, displayType);
+  const existing = await listScreenshotsInSet(token, setId);
+  for (const s of existing) {
+    await deleteScreenshot(token, s.id);
+  }
+}
+
 async function uploadScreenshotCell(
   token: string,
   ctx: PlatformCtx,
@@ -308,18 +463,13 @@ async function uploadScreenshotCell(
   const preset = getPreset(cell.presetId);
   const ascLocale = localeToAsc(cell.locale);
 
-  const locId = await ensureVersionLocalization(
+  const setId = await resolveSetId(
     token,
-    ctx.versionId,
+    ctx,
+    setCache,
     cell.locale,
-    ctx.locIds,
+    preset.ascDisplayType,
   );
-  const setKey = `${locId}:${preset.ascDisplayType}`;
-  let setId = setCache.get(setKey);
-  if (!setId) {
-    setId = await ensureScreenshotSet(token, locId, preset.ascDisplayType);
-    setCache.set(setKey, setId);
-  }
 
   const buffer = fs.readFileSync(cell.composedPath);
   const fileName = `${cell.screenId}_${ascLocale}_${preset.id}.png`;
@@ -338,6 +488,7 @@ async function uploadScreenshotCell(
 /** Simulate the full pipeline (used without credentials or to preview safely). */
 async function runDryRun(job: UploadJob): Promise<void> {
   for (const item of job.items) {
+    if (job.cancelled) break;
     item.state = "uploading";
     item.attempts += 1;
     setItem(job, item);

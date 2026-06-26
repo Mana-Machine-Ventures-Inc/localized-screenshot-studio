@@ -137,6 +137,24 @@ export async function pollScreenshot(
   return { state: "UPLOAD_COMPLETE" };
 }
 
+/** List the screenshots currently in a set (used to clear before re-upload). */
+export async function listScreenshotsInSet(
+  token: string,
+  setId: string,
+): Promise<{ id: string; fileName?: string }[]> {
+  const res = await ascRequest(
+    token,
+    "GET",
+    `/v1/appScreenshotSets/${setId}/appScreenshots?limit=50`,
+  );
+  const list = (Array.isArray(res.data) ? res.data : [res.data]) as JsonApiResource<{
+    fileName?: string;
+  }>[];
+  return list
+    .filter((s) => s?.id)
+    .map((s) => ({ id: s.id, fileName: s.attributes?.fileName }));
+}
+
 /** Delete a screenshot (used to replace an existing one before re-upload). */
 export async function deleteScreenshot(
   token: string,

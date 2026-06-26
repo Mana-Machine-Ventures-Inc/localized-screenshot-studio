@@ -19,6 +19,7 @@ import {
 import { localizeKey } from "./strings/localize.js";
 import { saveCredentials, loadCredentials } from "./asc/credentials.js";
 import {
+  cancelUploadJob,
   createUploadJob,
   getJob,
   jobEmitter,
@@ -497,6 +498,15 @@ export function createServer() {
       return;
     }
     res.json(job);
+  });
+
+  app.post("/api/jobs/:id/cancel", (req, res) => {
+    const job = cancelUploadJob(req.params.id);
+    if (!job) {
+      res.status(404).json({ error: "Unknown job" });
+      return;
+    }
+    res.json({ job });
   });
 
   app.get("/api/jobs/:id/events", (req, res) => {

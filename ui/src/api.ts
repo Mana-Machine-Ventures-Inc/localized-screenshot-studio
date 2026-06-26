@@ -234,7 +234,12 @@ export const api = {
     dryRun?: boolean;
     cellIds?: string[];
     locales?: string[];
+    presetIds?: string[];
+    replace?: boolean;
+    clearOnly?: boolean;
   }) => req<{ job: UploadJob }>("POST", "/api/upload", opts),
+  cancelJob: (id: string) =>
+    req<{ job: UploadJob }>("POST", `/api/jobs/${id}/cancel`),
   getJob: (id: string) => req<UploadJob>("GET", `/api/jobs/${id}`),
 };
 

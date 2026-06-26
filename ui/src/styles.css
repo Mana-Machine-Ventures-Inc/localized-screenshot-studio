@@ -388,6 +388,16 @@ table.matrix th.rowhead {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Stack the summary row and an optional error message. */
+.job-item {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+.job-item-error {
+  padding: 2px 0 2px 2px;
+  line-height: 1.4;
+}
 
 .banner {
   padding: 8px 12px;
@@ -404,6 +414,12 @@ table.matrix th.rowhead {
   background: rgba(91, 140, 255, 0.1);
   border: 1px solid #2d3b5e;
   color: #9bb4ff;
+}
+.banner.error {
+  background: rgba(248, 81, 73, 0.12);
+  border: 1px solid #5a2330;
+  color: #ffb4ae;
+  word-break: break-word;
 }
 .error-text {
   color: var(--bad);
@@ -929,6 +945,29 @@ table.matrix th.rowhead {
   gap: 10px;
   align-items: flex-end;
 }
+/* --- per-language screenshot upload list -------------------------------- */
+.lang-upload-list {
+  display: flex;
+  flex-direction: column;
+}
+.lang-upload-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.lang-upload-row:last-child {
+  border-bottom: none;
+}
+.lang-upload-row .grow {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 /* --- confirm dialog + generation error banner --------------------------- */
 .confirm-overlay {
   position: fixed;

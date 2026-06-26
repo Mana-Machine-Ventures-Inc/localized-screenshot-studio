@@ -197,7 +197,8 @@ export interface UploadJobItem {
   locale: string;
   presetId?: string;
   platform?: StorePlatform;
-  kind: "screenshot" | "metadata";
+  displayType?: string;
+  kind: "screenshot" | "metadata" | "clear";
   state: AssetState;
   attempts: number;
   error?: string;
@@ -209,4 +210,6 @@ export interface UploadJob {
   dryRun: boolean;
   items: UploadJobItem[];
   done: boolean;
+  cancelled?: boolean;
+  error?: string;
 }

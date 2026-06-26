@@ -198,6 +198,13 @@ export function App() {
       });
     });
 
+  const cancelUpload = () => {
+    if (!job || job.done) return;
+    api.cancelJob(job.id).catch(() => {});
+  };
+
+  const closeJob = () => setJob(null);
+
   const retryFailed = () => {
     if (!job) return;
     const cellIds = job.items
@@ -348,12 +355,15 @@ export function App() {
           <UploadTab
             config={config}
             summary={summary}
+            presets={presets}
             hasCreds={hasCreds}
             busy={busy}
             job={job}
             onUpload={startUpload}
             onSetMetadata={setMetadata}
             onRetryFailed={retryFailed}
+            onCancel={cancelUpload}
+            onCloseJob={closeJob}
             onEditCredentials={() => setShowCreds(true)}
           />
         )}

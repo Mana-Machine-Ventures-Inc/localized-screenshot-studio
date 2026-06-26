@@ -39,19 +39,47 @@ export async function resolveVersionId(
     platform?: string;
   }>[];
 
+  const platformLabel = opts.platform ? ` (${opts.platform})` : "";
+
   if (opts.versionString) {
     const match = versions.find(
       (v) => v.attributes?.versionString === opts.versionString,
     );
-    if (match) return match.id;
+    if (!match) {
+      const seen = versions
+        .map((v) => v.attributes?.versionString)
+        .filter(Boolean)
+        .join(", ");
+      throw new Error(
+        `Version "${opts.versionString}" not found${platformLabel}. ` +
+          `Create it in App Store Connect first. Existing versions: ${seen || "none"}.`,
+      );
+    }
+    const state = match.attributes?.appStoreState ?? "";
+    if (!EDITABLE_STATES.has(state)) {
+      throw new Error(
+        `Version "${opts.versionString}"${platformLabel} is "${state}", which can't be edited. ` +
+          `Screenshots/metadata can only be uploaded to an editable version ` +
+          `(e.g. PREPARE_FOR_SUBMISSION).`,
+      );
+    }
+    return match.id;
   }
+
   const editable = versions.find((v) =>
     EDITABLE_STATES.has(v.attributes?.appStoreState ?? ""),
   );
   if (editable) return editable.id;
-  if (versions[0]) return versions[0].id;
+
+  // No safe fallback: attaching to a live/non-editable version is exactly what
+  // produces the cryptic 409 "not acceptable for the current resource state".
+  const states = versions
+    .map((v) => `${v.attributes?.versionString ?? "?"}=${v.attributes?.appStoreState ?? "?"}`)
+    .join(", ");
   throw new Error(
-    `No App Store version found for app${opts.platform ? ` (${opts.platform})` : ""}`,
+    `No editable App Store version found${platformLabel}. ` +
+      `Create a new version in App Store Connect (it must be in a state like ` +
+      `PREPARE_FOR_SUBMISSION). Versions seen: ${states || "none"}.`,
   );
 }
 
