@@ -294,6 +294,8 @@ export interface ProjectConfig {
   writeToCatalog?: boolean;
   /** which localized string keys drive App Store metadata, per platform. */
   metadata?: AppStoreMetadataConfig;
+  /** ledger of screens uploaded to App Store Connect, tagged by binary. */
+  uploads?: UploadRecord[];
   /** redacted ASC config reference (no secrets persisted to disk). */
   asc?: {
     issuerId?: string;
@@ -308,6 +310,26 @@ export type UploadKind = "screenshots" | "metadata" | "both";
 
 /** App Store platform group we expose in the studio. */
 export type StorePlatform = "ios" | "macos";
+
+/**
+ * A record that a specific screen (cell) was successfully uploaded to App Store
+ * Connect, tagged with the binary it was uploaded for. The ledger is cleared
+ * for a cell whenever it is re-composed (the image changed) or its set is
+ * cleared, so an entry means "this exact screen is live for this build".
+ */
+export interface UploadRecord {
+  cellId: string;
+  locale: string;
+  presetId: string;
+  displayType: string;
+  platform: StorePlatform;
+  /** marketing version (CFBundleShortVersionString) at upload time. */
+  version?: string;
+  /** build number (CFBundleVersion) at upload time. */
+  build?: string;
+  ascScreenshotId?: string;
+  uploadedAt: string;
+}
 
 /** Localized string keys that supply App Store metadata for one platform. */
 export interface PlatformMetadata {
@@ -333,6 +355,10 @@ export interface UploadJobItem {
   state: AssetState;
   attempts: number;
   error?: string;
+  /** non-fatal warning (e.g. App Store Connect ignored a field, empty text). */
+  note?: string;
+  /** human-readable diagnostic trace of what was sent / received. */
+  log?: string[];
 }
 
 export interface UploadJob {

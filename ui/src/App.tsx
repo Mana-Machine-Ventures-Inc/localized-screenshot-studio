@@ -200,7 +200,13 @@ export function App() {
 
   const cancelUpload = () => {
     if (!job || job.done) return;
-    api.cancelJob(job.id).catch(() => {});
+    // If the engine still knows the job, it returns the (now cancelling) job and
+    // the SSE stream will finish it. If it doesn't (e.g. the engine restarted
+    // and the job is stale), clear it locally so the UI stops blocking uploads.
+    api
+      .cancelJob(job.id)
+      .then((res) => setJob(res.job))
+      .catch(() => setJob(null));
   };
 
   const closeJob = () => setJob(null);

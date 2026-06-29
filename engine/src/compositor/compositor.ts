@@ -353,5 +353,7 @@ export async function composeCell(cell: AssetCell): Promise<AssetCell> {
     updatedAt: new Date().toISOString(),
   };
   store.upsertCell(updated);
+  // The screenshot changed, so any prior upload of this cell is now stale.
+  store.clearUploadForCell(updated.id);
   return updated;
 }

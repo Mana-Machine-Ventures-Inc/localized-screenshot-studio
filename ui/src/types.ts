@@ -144,6 +144,18 @@ export interface DeviceTypography {
 
 export type StorePlatform = "ios" | "macos";
 
+export interface UploadRecord {
+  cellId: string;
+  locale: string;
+  presetId: string;
+  displayType: string;
+  platform: StorePlatform;
+  version?: string;
+  build?: string;
+  ascScreenshotId?: string;
+  uploadedAt: string;
+}
+
 export interface PlatformMetadata {
   descriptionKey?: string;
   whatsNewKey?: string;
@@ -164,6 +176,7 @@ export interface ProjectConfig {
   stringEdits?: Record<string, Record<string, string>>;
   addedStrings?: { key: string; comment?: string; values: Record<string, string> }[];
   metadata?: AppStoreMetadataConfig;
+  uploads?: UploadRecord[];
   asc?: {
     issuerId?: string;
     keyId?: string;
@@ -202,6 +215,8 @@ export interface UploadJobItem {
   state: AssetState;
   attempts: number;
   error?: string;
+  note?: string;
+  log?: string[];
 }
 
 export interface UploadJob {

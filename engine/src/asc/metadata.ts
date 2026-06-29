@@ -113,20 +113,37 @@ export async function ensureVersionLocalization(
   const found = existing.get(ascLocale);
   if (found) return found;
 
-  const res = await ascRequest(token, "POST", `/v1/appStoreVersionLocalizations`, {
-    data: {
-      type: "appStoreVersionLocalizations",
-      attributes: { locale: ascLocale },
-      relationships: {
-        appStoreVersion: {
-          data: { type: "appStoreVersions", id: versionId },
+  try {
+    const res = await ascRequest(token, "POST", `/v1/appStoreVersionLocalizations`, {
+      data: {
+        type: "appStoreVersionLocalizations",
+        attributes: { locale: ascLocale },
+        relationships: {
+          appStoreVersion: {
+            data: { type: "appStoreVersions", id: versionId },
+          },
         },
       },
-    },
-  });
-  const created = res.data as JsonApiResource;
-  existing.set(ascLocale, created.id);
-  return created.id;
+    });
+    const created = res.data as JsonApiResource;
+    existing.set(ascLocale, created.id);
+    return created.id;
+  } catch (err) {
+    // ASC rejects locales that aren't enabled for this app/platform with a
+    // cryptic 409. Translate it into something actionable.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/not listed for localization/i.test(msg)) {
+      const note =
+        ascLocale === locale ? ascLocale : `${locale} → ${ascLocale}`;
+      throw new Error(
+        `App Store Connect won't accept locale "${note}" for this version. ` +
+          `Make sure that language is added to the app for this platform ` +
+          `(App Store Connect → your app → the relevant platform → add the ` +
+          `language under App Information / the version's localizations), then retry.`,
+      );
+    }
+    throw err;
+  }
 }
 
 export interface LocalizationFields {
@@ -138,12 +155,26 @@ export interface LocalizationFields {
   supportUrl?: string;
 }
 
+/** Read back a localization's current attributes (used to verify a PATCH). */
+export async function getVersionLocalization(
+  token: string,
+  localizationId: string,
+): Promise<LocalizationFields & { locale?: string }> {
+  const res = await ascRequest(
+    token,
+    "GET",
+    `/v1/appStoreVersionLocalizations/${localizationId}`,
+  );
+  const r = res.data as JsonApiResource<LocalizationFields & { locale?: string }>;
+  return r.attributes ?? {};
+}
+
 export async function patchVersionLocalization(
   token: string,
   localizationId: string,
   fields: LocalizationFields,
-): Promise<void> {
-  await ascRequest(
+): Promise<LocalizationFields> {
+  const res = await ascRequest(
     token,
     "PATCH",
     `/v1/appStoreVersionLocalizations/${localizationId}`,
@@ -155,4 +186,6 @@ export async function patchVersionLocalization(
       },
     },
   );
+  const r = res.data as JsonApiResource<LocalizationFields>;
+  return r.attributes ?? {};
 }

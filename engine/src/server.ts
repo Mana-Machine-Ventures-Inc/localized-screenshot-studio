@@ -15,6 +15,7 @@ import {
   overlayImagePath,
   sampleSlotColors,
   replaceOverlaySource,
+  duplicateScreen,
 } from "./overlay/index.js";
 import { localizeKey } from "./strings/localize.js";
 import { saveCredentials, loadCredentials } from "./asc/credentials.js";
@@ -321,6 +322,19 @@ export function createServer() {
     asyncRoute(async (req, res) => {
       store.removeScreen(req.params.id);
       res.json({ ok: true, config: store.getConfig() });
+    }),
+  );
+
+  // Clone a screen's theming into a new screen for another device class.
+  app.post(
+    "/api/screens/:id/duplicate",
+    asyncRoute(async (req, res) => {
+      const { presetIds, name } = req.body as {
+        presetIds?: string[];
+        name?: string;
+      };
+      const screen = duplicateScreen(req.params.id, { presetIds, name });
+      res.json({ screen, config: store.getConfig() });
     }),
   );
 

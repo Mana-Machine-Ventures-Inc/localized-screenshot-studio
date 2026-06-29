@@ -93,6 +93,27 @@ export function StringsTab({
     [strings, locales, baseLocale],
   );
 
+  const nonBaseLocales = useMemo(
+    () => locales.filter((l) => l !== baseLocale),
+    [locales, baseLocale],
+  );
+
+  /** Filtered keys that have a source value (eligible for re-translation). */
+  const retranslatable = useMemo(
+    () => filtered.filter((s) => (s.values[baseLocale]?.trim() ?? "") !== ""),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [filtered, baseLocale],
+  );
+  // Two-step arm for the destructive bulk overwrite (window.confirm is
+  // unreliable in the Tauri webview, so confirm inline instead).
+  const [armRetrans, setArmRetrans] = useState(false);
+  const retransTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const armRetranslate = () => {
+    setArmRetrans(true);
+    if (retransTimer.current) clearTimeout(retransTimer.current);
+    retransTimer.current = setTimeout(() => setArmRetrans(false), 4000);
+  };
+
   const saveValue = async (key: string, value: string) => {
     if (target === baseLocale) {
       // Editing the source of truth wipes downstream translations so they are
@@ -191,6 +212,35 @@ export function StringsTab({
     }
   };
 
+  /** Re-translate the listed keys into EVERY language, overwriting existing
+   * translations (used when the source changed but stale translations remain). */
+  const retranslateAll = async () => {
+    const keys = retranslatable.map((s) => s.key);
+    if (!keys.length || !nonBaseLocales.length) return;
+    cancelBulk.current = false;
+    setBulk({ done: 0, total: keys.length });
+    try {
+      for (let i = 0; i < keys.length; i++) {
+        if (cancelBulk.current) break;
+        const key = keys[i];
+        setLocalizing((p) => ({ ...p, [key]: true }));
+        try {
+          const r = await api.localizeString(key, nonBaseLocales);
+          setResults((p) => ({ ...p, [key]: r }));
+        } catch {
+          /* keep going; row keeps its current values */
+        } finally {
+          setLocalizing((p) => ({ ...p, [key]: false }));
+        }
+        setBulk({ done: i + 1, total: keys.length });
+      }
+      await load();
+      onChanged();
+    } finally {
+      setBulk(null);
+    }
+  };
+
   const dismissResult = (key: string) =>
     setResults((p) => {
       const next = { ...p };
@@ -247,14 +297,33 @@ export function StringsTab({
             </button>
           </div>
         ) : (
-          <button
-            className="ghost"
-            onClick={() => void localizeAllMissing()}
-            disabled={!keysWithMissing.length}
-            title="Generate every missing translation with AI"
-          >
-            Localize all missing ({keysWithMissing.length})
-          </button>
+          <>
+            <button
+              className="ghost"
+              onClick={() => void localizeAllMissing()}
+              disabled={!keysWithMissing.length}
+              title="Generate every missing translation with AI"
+            >
+              Localize all missing ({keysWithMissing.length})
+            </button>
+            <button
+              className={armRetrans ? "danger" : "ghost"}
+              disabled={!retranslatable.length || !nonBaseLocales.length}
+              onClick={() => {
+                if (armRetrans) {
+                  setArmRetrans(false);
+                  void retranslateAll();
+                } else {
+                  armRetranslate();
+                }
+              }}
+              title="Re-translate the listed strings into every language, overwriting existing translations (use after editing the source text)"
+            >
+              {armRetrans
+                ? `Overwrite ${retranslatable.length}×${nonBaseLocales.length}?`
+                : `Retranslate listed (${retranslatable.length})`}
+            </button>
+          </>
         )}
         <button className="primary" onClick={() => setAdding((v) => !v)}>
           + New string
@@ -355,6 +424,17 @@ export function StringsTab({
                     ) : (
                       <span className="slot-badge ok">complete</span>
                     )}
+                    {nonBaseLocales.length > 0 &&
+                      (s.values[baseLocale]?.trim() ?? "") !== "" && (
+                        <button
+                          className="mini ghost"
+                          disabled={isBusy || !!bulk}
+                          onClick={() => void localizeRow(s.key, nonBaseLocales)}
+                          title="Re-translate every language from the default (overwrites existing translations)"
+                        >
+                          {isBusy ? "…" : "↻ Retranslate"}
+                        </button>
+                      )}
                     {s.edited && <span className="slot-badge">edited</span>}
                     <button
                       className="mini icon-btn"

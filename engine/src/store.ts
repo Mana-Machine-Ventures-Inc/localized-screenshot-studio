@@ -15,6 +15,7 @@ import type {
   ProjectConfig,
   ProjectData,
   ScreenTemplate,
+  UploadRecord,
 } from "./types.js";
 
 export const DEFAULT_PRESETS = ["iphone-6-9", "ipad-13"];
@@ -198,6 +199,46 @@ class Store {
     }
     cfg.cells = cfg.cells.filter((c) => wanted.has(c.id));
     this.save();
+  }
+
+  // --- upload ledger --------------------------------------------------------
+
+  /** Record (or replace) a successful screen upload for the current binary. */
+  recordUpload(rec: UploadRecord): void {
+    const cfg = this.getConfig();
+    cfg.uploads = cfg.uploads ?? [];
+    const idx = cfg.uploads.findIndex((u) => u.cellId === rec.cellId);
+    if (idx >= 0) cfg.uploads[idx] = rec;
+    else cfg.uploads.push(rec);
+    this.save();
+  }
+
+  /** Forget a cell's upload (called when it's re-composed — the image changed). */
+  clearUploadForCell(cellId: string): void {
+    const cfg = this.config;
+    if (!cfg?.uploads?.length) return;
+    const next = cfg.uploads.filter((u) => u.cellId !== cellId);
+    if (next.length !== cfg.uploads.length) {
+      cfg.uploads = next;
+      this.save();
+    }
+  }
+
+  /** Forget every upload in a set (locale × display type) — used when clearing. */
+  clearUploadsForSet(locale: string, displayType: string): void {
+    const cfg = this.config;
+    if (!cfg?.uploads?.length) return;
+    const next = cfg.uploads.filter(
+      (u) => !(u.locale === locale && u.displayType === displayType),
+    );
+    if (next.length !== cfg.uploads.length) {
+      cfg.uploads = next;
+      this.save();
+    }
+  }
+
+  getUploads(): UploadRecord[] {
+    return this.config?.uploads ?? [];
   }
 
   setAscRef(ref: ProjectConfig["asc"]): void {

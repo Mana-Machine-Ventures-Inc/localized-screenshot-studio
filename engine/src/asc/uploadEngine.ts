@@ -8,6 +8,7 @@ import { loadCredentials } from "./credentials.js";
 import { localeToAsc } from "./locales.js";
 import {
   ensureVersionLocalization,
+  getVersionLocalization,
   listVersionLocalizations,
   patchVersionLocalization,
   resolveVersionId,
@@ -225,10 +226,16 @@ function buildItems(opts: CreateJobOptions): UploadJobItem[] {
 
   if (!opts.clearOnly && (opts.kind === "metadata" || opts.kind === "both")) {
     const locales = opts.locales ?? data?.locales ?? [cfg.baseLocale];
+    // When the caller targets specific locales (the per-language button), emit
+    // an item even if nothing resolves, so the readout explains *why* it was
+    // empty. For a broad "all languages" run, skip locales with no metadata.
+    const targeted = Boolean(opts.locales);
     for (const platform of metadataPlatforms()) {
       for (const locale of locales) {
-        const fields = resolveMetaFields(platform, locale);
-        if (!fields.description && !fields.whatsNew) continue;
+        if (!targeted) {
+          const fields = resolveMetaFields(platform, locale);
+          if (!fields.description && !fields.whatsNew) continue;
+        }
         items.push({
           locale,
           platform,
@@ -350,15 +357,19 @@ async function runRealUpload(job: UploadJob): Promise<void> {
           (n, err) => emit(job, "retry", { item, n, error: errMsg(err) }),
           aborted,
         );
+        // The set's screens are gone from App Store Connect — forget them.
+        store.clearUploadsForSet(item.locale, item.displayType ?? "");
       } else if (item.kind === "metadata") {
         const group = item.platform ?? "ios";
         const ctx = await ctxFor(ascPlatform(group));
-        await withRetry(
+        const result = await withRetry(
           () => uploadMetadata(token, ctx, item.locale, group),
           3,
           (n, err) => emit(job, "retry", { item, n, error: errMsg(err) }),
           aborted,
         );
+        item.note = result.note;
+        item.log = result.log;
       } else if (item.cellId) {
         const group = item.platform ?? storePlatformForPreset(item.presetId ?? "");
         const ctx = await ctxFor(ascPlatform(group));
@@ -368,6 +379,7 @@ async function runRealUpload(job: UploadJob): Promise<void> {
           (n, err) => emit(job, "retry", { item, n, error: errMsg(err) }),
           aborted,
         );
+        recordCellUpload(item, group);
       }
       item.state = "verified";
       if (item.cellId) updateCell(item.cellId, { state: "verified", lastError: undefined });
@@ -378,6 +390,24 @@ async function runRealUpload(job: UploadJob): Promise<void> {
     }
     setItem(job, item);
   }
+}
+
+/** Record a verified screenshot upload in the ledger, tagged with the binary. */
+function recordCellUpload(item: UploadJobItem, group: StorePlatform): void {
+  if (!item.cellId) return;
+  const data = store.getData();
+  const cell = store.getCell(item.cellId);
+  store.recordUpload({
+    cellId: item.cellId,
+    locale: item.locale,
+    presetId: item.presetId ?? cell?.presetId ?? "",
+    displayType: item.displayType ?? "",
+    platform: group,
+    version: data?.marketingVersion,
+    build: data?.buildNumber,
+    ascScreenshotId: cell?.ascScreenshotId,
+    uploadedAt: new Date().toISOString(),
+  });
 }
 
 /** Mark a job complete and notify listeners with the final state. */
@@ -394,24 +424,110 @@ interface PlatformCtx {
   locIds: Map<string, string>;
 }
 
+interface MetaResult {
+  note?: string;
+  log: string[];
+}
+
+/** Short, log-safe preview of a possibly-long string value. */
+function preview(s?: string): string {
+  if (s == null) return "(empty)";
+  const flat = s.replace(/\r\n/g, "\n");
+  const shown = flat.length > 160 ? `${flat.slice(0, 160)}…` : flat;
+  return `${flat.length} chars ${JSON.stringify(shown)}`;
+}
+
+/**
+ * Push description + What's New for one (platform, locale) and verify the
+ * change actually stuck. Returns a non-fatal warning plus a full trace of what
+ * we resolved, posted, and received — so a "doesn't take" can be diagnosed.
+ */
 async function uploadMetadata(
   token: string,
   ctx: PlatformCtx,
   locale: string,
   platform: StorePlatform,
-): Promise<void> {
+): Promise<MetaResult> {
+  const log: string[] = [];
+  const cfg = store.getConfig();
+  const m = cfg.metadata?.[platform];
+  const base = cfg.baseLocale;
+  const ascLoc = localeToAsc(locale);
+
+  log.push(`platform=${platform} · version=${ctx.versionId}`);
+  log.push(`locale=${locale}${ascLoc !== locale ? ` → ASC ${ascLoc}` : ""}`);
+  log.push(
+    `mapped keys: description=${m?.descriptionKey ?? "(none)"}, whatsNew=${m?.whatsNewKey ?? "(none)"}`,
+  );
+
+  const before = ctx.locIds.size;
   const locId = await ensureVersionLocalization(
     token,
     ctx.versionId,
     locale,
     ctx.locIds,
   );
+  const created = ctx.locIds.size > before;
+  log.push(`localization id=${locId}${created ? " (created)" : " (existing)"}`);
+
   const { description, whatsNew } = resolveMetaFields(platform, locale);
-  if (!description && !whatsNew) return;
-  await patchVersionLocalization(token, locId, {
+  log.push(`resolved description: ${preview(description)}`);
+  log.push(`resolved whatsNew: ${preview(whatsNew)}`);
+
+  const warnings: string[] = [];
+  if (m?.whatsNewKey && !whatsNew) {
+    warnings.push(
+      `What's New not sent for ${locale}: string "${m.whatsNewKey}" is empty for ${locale} and ${base} (and no release notes found).`,
+    );
+  }
+  if (m?.descriptionKey && !description) {
+    warnings.push(
+      `Description not sent for ${locale}: string "${m.descriptionKey}" is empty for ${locale} and ${base}.`,
+    );
+  }
+
+  if (!description && !whatsNew) {
+    log.push("PATCH skipped: nothing resolved to send.");
+    return { note: warnings.join(" ") || "Nothing to upload.", log };
+  }
+
+  const reqAttrs = {
     description: description || undefined,
     whatsNew: whatsNew || undefined,
-  });
+  };
+  log.push(
+    `PATCH /v1/appStoreVersionLocalizations/${locId} → ${JSON.stringify({
+      description: reqAttrs.description ? `${reqAttrs.description.length} chars` : undefined,
+      whatsNew: reqAttrs.whatsNew ? `${reqAttrs.whatsNew.length} chars` : undefined,
+    })}`,
+  );
+
+  const resp = await patchVersionLocalization(token, locId, reqAttrs);
+  log.push(`PATCH response whatsNew: ${preview(resp.whatsNew)}`);
+  log.push(`PATCH response description: ${preview(resp.description)}`);
+
+  // Read the localization back independently. ASC returns 200 for an
+  // accepted-but-ignored What's New, so a successful PATCH isn't proof.
+  const norm = (s?: string) => (s ?? "").replace(/\r\n/g, "\n").trim();
+  try {
+    const after = await getVersionLocalization(token, locId);
+    log.push(`GET read-back whatsNew: ${preview(after.whatsNew)}`);
+    log.push(`GET read-back description: ${preview(after.description)}`);
+    if (whatsNew && norm(after.whatsNew) !== norm(whatsNew)) {
+      warnings.push(
+        `App Store Connect accepted the update but What's New for ${locale} is unchanged. ` +
+          `This happens when the version isn't an update (e.g. the app's first version) ` +
+          `or What's New isn't editable in the version's current state.`,
+      );
+    }
+    if (description && norm(after.description) !== norm(description)) {
+      warnings.push(`App Store Connect did not apply the Description for ${locale}.`);
+    }
+  } catch (err) {
+    log.push(`read-back GET failed: ${errMsg(err)}`);
+  }
+
+  return { note: warnings.length ? warnings.join(" ") : undefined, log };
 }
 
 /** Find-or-create the set for (locale × displayType), cached per run. */

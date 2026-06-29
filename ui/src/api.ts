@@ -135,6 +135,15 @@ export const api = {
       "DELETE",
       `/api/screens/${screenId}`,
     ),
+  duplicateScreen: (
+    screenId: string,
+    opts: { presetIds?: string[]; name?: string } = {},
+  ) =>
+    req<{ screen: ScreenTemplate; config: ProjectConfig }>(
+      "POST",
+      `/api/screens/${screenId}/duplicate`,
+      opts,
+    ),
   setCompositor: (patch: Partial<CompositorConfig>) =>
     req<{ compositor: CompositorConfig }>("PUT", "/api/compositor", patch),
   setDeviceTypography: (

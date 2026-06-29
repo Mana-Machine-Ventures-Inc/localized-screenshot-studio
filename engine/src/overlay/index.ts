@@ -182,6 +182,72 @@ export async function createOverlayScreen(
   };
 }
 
+const DEVICE_CLASS_NAME: Record<string, string> = {
+  ios: "iPhone",
+  ipados: "iPad",
+  macos: "Mac",
+};
+
+/** Suggest "<Base name> (Mac)" for a duplicate targeting a device class. */
+function defaultDuplicateName(source: ScreenTemplate, presetIds: string[]): string {
+  const preset = PRESETS.find((p) => p.id === presetIds[0]);
+  const cls = preset ? DEVICE_CLASS_NAME[preset.platform] ?? preset.platform : "Copy";
+  const base = source.name.replace(/\s*\([^)]*\)\s*$/, "").trim() || source.name;
+  return `${base} (${cls})`;
+}
+
+export interface DuplicateScreenInput {
+  /** device presets the new screen targets (defaults to the source's). */
+  presetIds?: string[];
+  /** override the auto-generated name. */
+  name?: string;
+}
+
+/**
+ * Clone a screen's theming (composition + headline mapping) into a brand-new
+ * screen that targets a different device class. The clone has no overlay yet —
+ * the user supplies a fresh screenshot in the Screens tab — so this is the
+ * "make a macOS version of my iPad screen" primitive: same background, headline
+ * color, and copy selection, new screenshot and device size.
+ */
+export function duplicateScreen(
+  sourceId: string,
+  input: DuplicateScreenInput = {},
+): ScreenTemplate {
+  if (!store.isOpen()) throw new Error("No project is open");
+  const source = store.getScreen(sourceId);
+  if (!source) throw new Error(`Unknown screen: ${sourceId}`);
+  const cfg = store.getConfig();
+
+  const requested = (input.presetIds ?? source.presetIds).filter((id) =>
+    PRESETS.some((p) => p.id === id),
+  );
+  const presetIds = requested.length ? requested : source.presetIds;
+
+  const name = input.name?.trim() || defaultDuplicateName(source, presetIds);
+  const id = uniqueScreenId(slugify(name));
+  const now = new Date().toISOString();
+
+  const screen: ScreenTemplate = {
+    id,
+    name,
+    kind: "overlay",
+    stringKeys: [],
+    headline: { ...source.headline },
+    // Deep-clone the composition so edits to the clone don't mutate the source.
+    composition: source.composition
+      ? (JSON.parse(JSON.stringify(source.composition)) as ScreenTemplate["composition"])
+      : undefined,
+    presetIds,
+    createdAt: now,
+    updatedAt: now,
+    // No overlay: the clone awaits its own screenshot.
+  };
+  store.upsertScreen(screen);
+  store.reconcileCells(store.getData()?.locales ?? [cfg.baseLocale]);
+  return screen;
+}
+
 export interface UpdateOverlayInput {
   name?: string;
   sourceLocale?: string;

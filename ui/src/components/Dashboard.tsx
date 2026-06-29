@@ -26,9 +26,18 @@ export function Dashboard({ job, onRetryFailed, onCancel, onClose }: Props) {
           {job.cancelled && <span className="chip">CANCELLED</span>}
         </b>
         {running ? (
-          <button className="danger" onClick={onCancel} disabled={job.cancelled}>
-            {job.cancelled ? "Cancelling…" : "Cancel upload"}
-          </button>
+          <div className="row" style={{ gap: 8 }}>
+            <button className="danger" onClick={onCancel} disabled={job.cancelled}>
+              {job.cancelled ? "Cancelling…" : "Cancel upload"}
+            </button>
+            <button
+              className="ghost"
+              onClick={onClose}
+              title="Hide this panel (use if a job is stuck after an engine restart)"
+            >
+              Dismiss
+            </button>
+          </div>
         ) : (
           <button className="ghost" onClick={onClose}>
             Close
@@ -103,6 +112,15 @@ export function Dashboard({ job, onRetryFailed, onCancel, onClose }: Props) {
             </div>
             {item.error && (
               <div className="job-item-error error-text">{item.error}</div>
+            )}
+            {item.note && !item.error && (
+              <div className="job-item-note">{item.note}</div>
+            )}
+            {item.log && item.log.length > 0 && (
+              <details className="job-item-log">
+                <summary>request / response readout</summary>
+                <pre>{item.log.join("\n")}</pre>
+              </details>
             )}
           </div>
         ))}

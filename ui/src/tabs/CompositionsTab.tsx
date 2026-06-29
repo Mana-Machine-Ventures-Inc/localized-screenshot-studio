@@ -8,6 +8,7 @@ import type {
   ProjectConfig,
   ProjectSummary,
   ScreenComposition,
+  ScreenTemplate,
 } from "../types";
 
 interface Props {
@@ -63,6 +64,15 @@ export function CompositionsTab({
   const [newHeadline, setNewHeadline] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [projectFonts, setProjectFonts] = useState<ProjectFont[]>([]);
+
+  // Multi-device theming: duplicate-for-device + copy/paste style.
+  const [dupPreset, setDupPreset] = useState<string>("");
+  const [copied, setCopied] = useState<{
+    from: string;
+    fromName: string;
+    style: Partial<ScreenComposition>;
+  } | null>(null);
+  const [includeHeadline, setIncludeHeadline] = useState(false);
 
   const stageWrapRef = useRef<HTMLDivElement>(null);
   const [wrap, setWrap] = useState({ w: 0, h: 0 });
@@ -235,6 +245,79 @@ export function CompositionsTab({
     }
   };
 
+  // --- multi-device theming ----------------------------------------------
+  const defaultCompFor = (s: ScreenTemplate): ScreenComposition => ({
+    mode: "device",
+    background: config.compositor.background,
+    headlineColor: config.compositor.headlineColor,
+    headlineFont: config.compositor.headlineFont,
+    headlineHeightFraction: config.compositor.headlineHeightFraction,
+    headlineText: s.headline ?? {},
+  });
+
+  // Clone this screen's theming into a new screen for another device class.
+  const duplicateForDevice = async () => {
+    const presetId = dupPreset || preset?.id;
+    if (!presetId) return;
+    setBusy("Duplicating");
+    try {
+      const res = await api.duplicateScreen(selected.id, {
+        presetIds: [presetId],
+      });
+      await reload();
+      onSelect(res.screen.id);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // "Style" = the per-screen theming (look + optional headline source).
+  const copyStyle = () =>
+    setCopied({
+      from: selected.id,
+      fromName: selected.name,
+      style: {
+        mode: comp.mode,
+        background: JSON.parse(JSON.stringify(comp.background)),
+        headlineColor: comp.headlineColor,
+        headlineHeightFraction: comp.headlineHeightFraction,
+        headlineKey: comp.headlineKey,
+        headlineText: comp.headlineText,
+      },
+    });
+
+  const mergedStyle = (target: ScreenTemplate): ScreenComposition => {
+    const base = target.composition ?? defaultCompFor(target);
+    const patch = { ...copied!.style };
+    if (!includeHeadline) {
+      delete patch.headlineKey;
+      delete patch.headlineText;
+    }
+    return { ...base, ...patch } as ScreenComposition;
+  };
+
+  const pasteStyle = async (scope: "one" | "all") => {
+    if (!copied) return;
+    const targets =
+      scope === "all"
+        ? screens.filter((s) => s.id !== copied.from)
+        : [selected];
+    if (!targets.length) return;
+    setBusy(scope === "all" ? "Applying to all screens" : "Applying style");
+    try {
+      for (const t of targets) {
+        const next = mergedStyle(t);
+        await api.setComposition(t.id, next);
+        if (t.id === selected.id) setComp(next);
+      }
+      await reload();
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const noOverlay = !selected.overlay;
+
   return (
     <div className="tab-content comp-tab">
       <div className="toolbar">
@@ -273,8 +356,80 @@ export function CompositionsTab({
       <div className="comp-body">
         <div className="comp-controls">
           <div className="section-title" style={{ marginTop: 0 }}>
-            Layout
+            Multi-device theming
           </div>
+          <div className="field">
+            <label>Duplicate this screen for…</label>
+            <div className="row" style={{ gap: 8 }}>
+              <select
+                value={dupPreset || preset?.id || ""}
+                onChange={(e) => setDupPreset(e.target.value)}
+                style={{ flex: 1 }}
+              >
+                {presets.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+              <button
+                className="ghost"
+                disabled={!!busy}
+                onClick={() => void duplicateForDevice()}
+                title="Create a new screen with the same theme + headline, awaiting its own screenshot"
+              >
+                Duplicate
+              </button>
+            </div>
+            <p className="hint" style={{ margin: "4px 0 0" }}>
+              Copies background, colors and headline. Add the new screenshot in
+              the Screens tab.
+            </p>
+          </div>
+
+          <div className="field">
+            <label>Copy style</label>
+            <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+              <button className="ghost" disabled={!!busy} onClick={copyStyle}>
+                Copy from this screen
+              </button>
+              {copied && (
+                <>
+                  <button
+                    className="ghost"
+                    disabled={!!busy || copied.from === selected.id}
+                    onClick={() => void pasteStyle("one")}
+                  >
+                    Paste here
+                  </button>
+                  <button
+                    className="ghost"
+                    disabled={!!busy}
+                    onClick={() => void pasteStyle("all")}
+                  >
+                    Paste to all
+                  </button>
+                </>
+              )}
+            </div>
+            {copied && (
+              <label
+                className="row"
+                style={{ gap: 6, alignItems: "center", marginTop: 6 }}
+              >
+                <input
+                  type="checkbox"
+                  checked={includeHeadline}
+                  onChange={(e) => setIncludeHeadline(e.target.checked)}
+                />
+                <span className="hint">
+                  include headline source (from “{copied.fromName}”)
+                </span>
+              </label>
+            )}
+          </div>
+
+          <div className="section-title">Layout</div>
           <div className="seg" style={{ width: "100%" }}>
             <button
               className={comp.mode === "passthrough" ? "on" : ""}
@@ -501,7 +656,15 @@ export function CompositionsTab({
         </div>
 
         <div className="comp-preview" ref={stageWrapRef}>
-          {stageW > 0 && (
+          {noOverlay && (
+            <div className="empty-state">
+              <p>
+                No screenshot yet. Theme is set — add this screen's image in the
+                Screens tab to see the composed preview.
+              </p>
+            </div>
+          )}
+          {!noOverlay && stageW > 0 && (
             <div
               className="comp-stage"
               style={{ width: stageW, height: stageH, ...(isDevice ? bgStyle : {}) }}
