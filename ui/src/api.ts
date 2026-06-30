@@ -36,11 +36,17 @@ function resolveApiBase(): string {
 
 export const API_BASE = resolveApiBase();
 
-async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function req<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  signal?: AbortSignal,
+): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     method,
     headers: body ? { "content-type": "application/json" } : undefined,
     body: body ? JSON.stringify(body) : undefined,
+    signal,
   });
   const text = await res.text();
   const json = text ? JSON.parse(text) : {};
@@ -118,11 +124,12 @@ export const api = {
     ),
   deleteString: (key: string) =>
     req<{ ok: boolean }>("DELETE", `/api/strings/${encodeURIComponent(key)}`),
-  localizeString: (key: string, locales?: string[]) =>
+  localizeString: (key: string, locales?: string[], signal?: AbortSignal) =>
     req<LocalizeResponse>(
       "POST",
       `/api/strings/${encodeURIComponent(key)}/localize`,
       { locales },
+      signal,
     ),
   addString: (key: string, value: string, comment?: string) =>
     req<{ string: StringEntry }>("POST", "/api/strings", {

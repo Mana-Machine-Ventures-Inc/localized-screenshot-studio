@@ -64,6 +64,7 @@ export function CompositionsTab({
   const [newHeadline, setNewHeadline] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [projectFonts, setProjectFonts] = useState<ProjectFont[]>([]);
+  const [armDelete, setArmDelete] = useState(false);
 
   // Multi-device theming: duplicate-for-device + copy/paste style.
   const [dupPreset, setDupPreset] = useState<string>("");
@@ -318,6 +319,36 @@ export function CompositionsTab({
 
   const noOverlay = !selected.overlay;
 
+  // Reset this screen's theming back to the project defaults.
+  const resetComposition = async () => {
+    setBusy("Resetting composition");
+    try {
+      await api.setComposition(selected.id, defaultComp);
+      setComp(defaultComp);
+      await reload();
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // Delete the whole screen (removes it from Screens, Compositions, Generate).
+  const armDeleteOnce = () => {
+    setArmDelete(true);
+    setTimeout(() => setArmDelete(false), 4000);
+  };
+  const deleteScreen = async () => {
+    setBusy("Deleting screen");
+    try {
+      const next = screens.find((s) => s.id !== selected.id);
+      await api.deleteScreen(selected.id);
+      onSelect(next?.id);
+      await reload();
+    } finally {
+      setBusy(null);
+      setArmDelete(false);
+    }
+  };
+
   return (
     <div className="tab-content comp-tab">
       <div className="toolbar">
@@ -351,6 +382,29 @@ export function CompositionsTab({
         )}
         <div className="spacer" />
         {busy && <span className="hint">{busy}…</span>}
+        <button
+          className="ghost"
+          disabled={!!busy}
+          onClick={() => void resetComposition()}
+          title="Revert this screen's background, colors and headline to the project default"
+        >
+          Reset composition
+        </button>
+        <button
+          className="danger"
+          disabled={!!busy}
+          onClick={() => {
+            if (armDelete) {
+              setArmDelete(false);
+              void deleteScreen();
+            } else {
+              armDeleteOnce();
+            }
+          }}
+          title="Delete this screen everywhere (Screens, Compositions, Generate)"
+        >
+          {armDelete ? "Click to confirm" : "Delete screen"}
+        </button>
       </div>
 
       <div className="comp-body">

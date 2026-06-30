@@ -301,16 +301,59 @@ export async function updateOverlayScreen(
   return screen;
 }
 
-/** Replace an overlay screen's source screenshot (e.g. a new app version). */
+/**
+ * Replace an overlay screen's source screenshot (e.g. a new app version) — or
+ * attach the *first* screenshot to a screen that has none yet (e.g. one created
+ * by "Duplicate for device"). When the screen has no overlay we always run OCR
+ * to build its text slots and clean plate from scratch.
+ */
 export async function replaceOverlaySource(
   screenId: string,
   imageDataUrl: string,
   reocr: boolean,
 ): Promise<ScreenTemplate> {
   const screen = store.getScreen(screenId);
-  if (!screen?.overlay) throw new Error(`Unknown overlay screen: ${screenId}`);
+  if (!screen) throw new Error(`Unknown screen: ${screenId}`);
   const paths = store.getPaths();
   const { buffer, ext } = decodeDataUrl(imageDataUrl);
+  fs.mkdirSync(paths.overlayDir, { recursive: true });
+
+  // First screenshot for an overlay-less screen: initialize the overlay.
+  if (!screen.overlay) {
+    const sourceLocale = store.getConfig().baseLocale;
+    const sourceAbs = path.join(paths.overlayDir, `${screenId}__source.${ext}`);
+    fs.writeFileSync(sourceAbs, buffer);
+
+    const sharpInit = (await import("sharp")).default;
+    const metaInit = await sharpInit(sourceAbs).metadata();
+    const W = metaInit.width ?? 1;
+    const H = metaInit.height ?? 1;
+
+    const ocr = await detectText(sourceAbs);
+    const slots = await buildSlots(buffer, ocr, sourceLocale, W, H);
+    const plateAbs = path.join(paths.overlayDir, `${screenId}__plate.png`);
+    await buildPlate(sourceAbs, slots, plateAbs);
+
+    screen.kind = "overlay";
+    screen.overlay = {
+      sourceLocale,
+      sourceImagePath: path.relative(paths.dataDir, sourceAbs),
+      platePath: path.relative(paths.dataDir, plateAbs),
+      plateWidth: W,
+      plateHeight: H,
+      slots,
+    };
+    screen.stringKeys = slots
+      .map((s) => s.linkedKey)
+      .filter((k): k is string => !!k);
+    screen.updatedAt = new Date().toISOString();
+    store.upsertScreen(screen);
+    store.reconcileCells(
+      store.getData()?.locales ?? [store.getConfig().baseLocale],
+    );
+    return screen;
+  }
+
   const oldAbs = path.join(paths.dataDir, screen.overlay.sourceImagePath);
   const sourceAbs = path.join(paths.overlayDir, `${screenId}__source.${ext}`);
   if (oldAbs !== sourceAbs && fs.existsSync(oldAbs)) {

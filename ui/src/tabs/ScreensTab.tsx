@@ -39,8 +39,17 @@ export function ScreensTab({
   const overlayScreens = config.screens.filter((s) => s.kind === "overlay");
   const [showUpload, setShowUpload] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
+  // Inline two-step delete confirm (window.confirm is a no-op in the Tauri webview).
+  const [armDelete, setArmDelete] = useState(false);
+  const armTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const swapInput = useRef<HTMLInputElement>(null);
   const reocrRef = useRef(false);
+
+  const armDeleteOnce = () => {
+    setArmDelete(true);
+    if (armTimer.current) clearTimeout(armTimer.current);
+    armTimer.current = setTimeout(() => setArmDelete(false), 4000);
+  };
 
   const selected =
     config.screens.find((s) => s.id === selectedId && s.kind === "overlay") ??
@@ -91,7 +100,6 @@ export function ScreensTab({
 
   const remove = async () => {
     if (!selected) return;
-    if (!window.confirm(`Delete “${selected.name}” and its captures?`)) return;
     setBusy("Deleting");
     try {
       await api.deleteScreen(selected.id);
@@ -99,6 +107,7 @@ export function ScreensTab({
       await reload();
     } finally {
       setBusy(null);
+      setArmDelete(false);
     }
   };
 
@@ -146,8 +155,20 @@ export function ScreensTab({
             >
               Swap &amp; re-detect
             </button>
-            <button className="danger" onClick={() => void remove()} disabled={!!busy}>
-              Delete
+            <button
+              className="danger"
+              onClick={() => {
+                if (armDelete) {
+                  setArmDelete(false);
+                  void remove();
+                } else {
+                  armDeleteOnce();
+                }
+              }}
+              disabled={!!busy}
+              title={`Delete “${selected.name}” and its captures`}
+            >
+              {armDelete ? "Click to confirm" : "Delete"}
             </button>
           </>
         )}
@@ -167,17 +188,37 @@ export function ScreensTab({
 
       <div className="screens-editor">
         {selected ? (
-          <OverlayEditor
-            key={selected.id}
-            screen={selected}
-            presets={presets}
-            summary={summary}
-            initialPreset={activePreset}
-            embedded
-            onChanged={() => reload().catch(() => {})}
-            previewLocale={previewLocale}
-            onPreviewLocale={onPreviewLocale}
-          />
+          selected.overlay ? (
+            <OverlayEditor
+              key={selected.id}
+              screen={selected}
+              presets={presets}
+              summary={summary}
+              initialPreset={activePreset}
+              embedded
+              onChanged={() => reload().catch(() => {})}
+              previewLocale={previewLocale}
+              onPreviewLocale={onPreviewLocale}
+            />
+          ) : (
+            <div className="empty-state">
+              <h2>{selected.name} has no screenshot yet</h2>
+              <p>
+                This screen was created without an image (e.g. duplicated for a
+                new device). Upload its screenshot to detect text and localize.
+              </p>
+              <button
+                className="primary"
+                disabled={!!busy}
+                onClick={() => {
+                  reocrRef.current = true;
+                  swapInput.current?.click();
+                }}
+              >
+                {busy ? `${busy}…` : "Upload screenshot"}
+              </button>
+            </div>
+          )
         ) : (
           <div className="empty-state">
             <h2>No screens yet</h2>

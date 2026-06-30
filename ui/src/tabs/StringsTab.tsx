@@ -32,6 +32,18 @@ export function StringsTab({
   const [results, setResults] = useState<Record<string, LocalizeResponse>>({});
   const [bulk, setBulk] = useState<{ done: number; total: number } | null>(null);
   const cancelBulk = useRef(false);
+  const bulkAbort = useRef<AbortController | null>(null);
+  // Transient per-row outcome shown right on the row after a (re)translate.
+  const [rowStatus, setRowStatus] = useState<
+    Record<string, { ok: boolean; text: string }>
+  >({});
+
+  const stopBulk = () => {
+    cancelBulk.current = true;
+    bulkAbort.current?.abort();
+  };
+  const isAbort = (e: unknown) =>
+    e instanceof DOMException && e.name === "AbortError";
 
   const load = async () => {
     const r = await api.getStrings();
@@ -161,12 +173,28 @@ export function StringsTab({
 
   const localizeRow = async (key: string, targets?: string[]) => {
     setLocalizing((p) => ({ ...p, [key]: true }));
+    setRowStatus((p) => {
+      const next = { ...p };
+      delete next[key];
+      return next;
+    });
     try {
       const r = await api.localizeString(key, targets);
       setResults((p) => ({ ...p, [key]: r }));
+      const saved = r.saved?.length ?? 0;
+      const requested = Object.keys(r.results).length;
+      setRowStatus((p) => ({
+        ...p,
+        [key]:
+          saved > 0
+            ? { ok: true, text: `✓ updated ${saved} language${saved > 1 ? "s" : ""}` }
+            : { ok: false, text: "✗ no translations saved" },
+      }));
       await load();
       onChanged();
     } catch (e) {
+      const msg = String(e instanceof Error ? e.message : e);
+      setRowStatus((p) => ({ ...p, [key]: { ok: false, text: `✗ ${msg}` } }));
       setResults((p) => ({
         ...p,
         [key]: {
@@ -177,7 +205,7 @@ export function StringsTab({
           results: {},
           saved: [],
           // surface the failure in the panel
-          ...({ error: String(e instanceof Error ? e.message : e) } as object),
+          ...({ error: msg } as object),
         } as LocalizeResponse,
       }));
     } finally {
@@ -189,6 +217,7 @@ export function StringsTab({
     const keys = keysWithMissing.map((s) => s.key);
     if (!keys.length) return;
     cancelBulk.current = false;
+    bulkAbort.current = new AbortController();
     setBulk({ done: 0, total: keys.length });
     try {
       for (let i = 0; i < keys.length; i++) {
@@ -196,9 +225,13 @@ export function StringsTab({
         const key = keys[i];
         setLocalizing((p) => ({ ...p, [key]: true }));
         try {
-          const r = await api.localizeString(key);
+          const r = await api.localizeString(key, undefined, bulkAbort.current?.signal);
           setResults((p) => ({ ...p, [key]: r }));
-        } catch {
+        } catch (e) {
+          if (isAbort(e)) {
+            setLocalizing((p) => ({ ...p, [key]: false }));
+            break;
+          }
           /* keep going; row stays missing */
         } finally {
           setLocalizing((p) => ({ ...p, [key]: false }));
@@ -209,6 +242,7 @@ export function StringsTab({
       onChanged();
     } finally {
       setBulk(null);
+      bulkAbort.current = null;
     }
   };
 
@@ -218,6 +252,7 @@ export function StringsTab({
     const keys = retranslatable.map((s) => s.key);
     if (!keys.length || !nonBaseLocales.length) return;
     cancelBulk.current = false;
+    bulkAbort.current = new AbortController();
     setBulk({ done: 0, total: keys.length });
     try {
       for (let i = 0; i < keys.length; i++) {
@@ -225,9 +260,21 @@ export function StringsTab({
         const key = keys[i];
         setLocalizing((p) => ({ ...p, [key]: true }));
         try {
-          const r = await api.localizeString(key, nonBaseLocales);
+          const r = await api.localizeString(key, nonBaseLocales, bulkAbort.current?.signal);
           setResults((p) => ({ ...p, [key]: r }));
-        } catch {
+          const saved = r.saved?.length ?? 0;
+          setRowStatus((p) => ({
+            ...p,
+            [key]:
+              saved > 0
+                ? { ok: true, text: `✓ updated ${saved}` }
+                : { ok: false, text: "✗ none saved" },
+          }));
+        } catch (e) {
+          if (isAbort(e)) {
+            setLocalizing((p) => ({ ...p, [key]: false }));
+            break;
+          }
           /* keep going; row keeps its current values */
         } finally {
           setLocalizing((p) => ({ ...p, [key]: false }));
@@ -238,6 +285,7 @@ export function StringsTab({
       onChanged();
     } finally {
       setBulk(null);
+      bulkAbort.current = null;
     }
   };
 
@@ -289,10 +337,7 @@ export function StringsTab({
             <span className="hint">
               localizing {bulk.done}/{bulk.total}
             </span>
-            <button
-              className="mini danger"
-              onClick={() => (cancelBulk.current = true)}
-            >
+            <button className="mini danger" onClick={stopBulk}>
               Stop
             </button>
           </div>
@@ -432,9 +477,17 @@ export function StringsTab({
                           onClick={() => void localizeRow(s.key, nonBaseLocales)}
                           title="Re-translate every language from the default (overwrites existing translations)"
                         >
-                          {isBusy ? "…" : "↻ Retranslate"}
+                          {isBusy ? "Translating…" : "↻ Retranslate"}
                         </button>
                       )}
+                    {rowStatus[s.key] && !isBusy && (
+                      <span
+                        className={`slot-badge ${rowStatus[s.key].ok ? "ok" : "bad"}`}
+                        title={rowStatus[s.key].text}
+                      >
+                        {rowStatus[s.key].text}
+                      </span>
+                    )}
                     {s.edited && <span className="slot-badge">edited</span>}
                     <button
                       className="mini icon-btn"
