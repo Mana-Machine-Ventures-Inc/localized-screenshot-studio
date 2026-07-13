@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, overlayImageUrl, type ProjectFont } from "../api";
+import { getOverlay } from "../screens/variants";
 import { FontPicker } from "./FontPicker";
 import { ColorPicker } from "./ColorPicker";
 import type {
@@ -16,6 +17,10 @@ interface Props {
   presets: DevicePreset[];
   summary: ProjectSummary;
   initialPreset: string;
+  /** Which device variant's overlay to edit. */
+  variantPresetId?: string;
+  /** Hide the device picker (parent manages variants). */
+  hideDevicePicker?: boolean;
   onChanged: () => void;
   /** Render inside a tab (fills parent) instead of as a full-screen overlay. */
   embedded?: boolean;
@@ -96,8 +101,12 @@ export function OverlayEditor({
   onClose,
   previewLocale: previewLocaleProp,
   onPreviewLocale,
+  variantPresetId,
+  hideDevicePicker,
 }: Props) {
-  const overlay = screen.overlay!;
+  const activePreset =
+    variantPresetId ?? screen.presetIds[0] ?? initialPreset;
+  const overlay = getOverlay(screen, activePreset)!;
   const sourceLocale = overlay.sourceLocale;
 
   const [slots, setSlots] = useState<TextSlot[]>(overlay.slots);
@@ -112,9 +121,11 @@ export function OverlayEditor({
   } | null>(null);
   const [localPreviewLocale, setLocalPreviewLocale] = useState(sourceLocale);
   const previewLocale = previewLocaleProp || localPreviewLocale;
-  const [presetId, setPresetId] = useState(
-    screen.presetIds[0] ?? initialPreset,
-  );
+  const [presetId, setPresetId] = useState(activePreset);
+  useEffect(() => {
+    setPresetId(activePreset);
+    setSlots(getOverlay(screen, activePreset)?.slots ?? []);
+  }, [screen.id, activePreset, screen]);
   const [onion, setOnion] = useState(false);
   const [eyedropper, setEyedropper] = useState(false);
   const [plateBust, setPlateBust] = useState(Date.now());
@@ -211,7 +222,7 @@ export function OverlayEditor({
   const save = async (next?: TextSlot[]) => {
     setSaving(true);
     try {
-      await api.updateOverlay(screen.id, { slots: next ?? slots });
+      await api.updateOverlay(screen.id, { slots: next ?? slots, presetId: activePreset });
       setPlateBust(Date.now());
       onChanged();
     } catch (e) {
@@ -450,7 +461,7 @@ export function OverlayEditor({
     if (samplerRef.current) return samplerRef.current;
     const img = new Image();
     img.crossOrigin = "anonymous";
-    img.src = overlayImageUrl(screen.id, "source", plateBust);
+    img.src = overlayImageUrl(screen.id, "source", activePreset, plateBust);
     await img.decode();
     const canvas = document.createElement("canvas");
     canvas.width = img.naturalWidth;
@@ -515,7 +526,7 @@ export function OverlayEditor({
     // Sample the real background so the new slot is legible by default.
     let sampled: { background: string; textColor: string } | undefined;
     try {
-      sampled = await api.sampleColors(screen.id, box);
+      sampled = await api.sampleColors(screen.id, box, activePreset);
     } catch {
       /* keep defaults */
     }
@@ -540,6 +551,7 @@ export function OverlayEditor({
       const { background, textColor } = await api.sampleColors(
         screen.id,
         selected.box,
+        activePreset,
       );
       setSlots((prev) => {
         const next = prev.map((s) =>
@@ -568,7 +580,7 @@ export function OverlayEditor({
 
   const rebuild = async () => {
     await save();
-    await api.rebuildPlate(screen.id);
+    await api.rebuildPlate(screen.id, activePreset);
     setPlateBust(Date.now());
   };
 
@@ -598,27 +610,21 @@ export function OverlayEditor({
               </option>
             ))}
           </select>
-          <select
-            value={presetId}
-            onChange={(e) => {
-              const v = e.target.value;
-              setPresetId(v);
-              // Persist the device size on the screen so Compositions/Generate
-              // use it too (otherwise it silently reverts to the saved preset).
-              api
-                .updateOverlay(screen.id, { presetIds: [v] })
-                .then(() => onChanged())
-                .catch((err) =>
-                  setInfo(String(err instanceof Error ? err.message : err)),
-                );
-            }}
-          >
-            {presets.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.label}
-              </option>
-            ))}
-          </select>
+          {!hideDevicePicker && (
+            <select
+              value={presetId}
+              onChange={(e) => {
+                const v = e.target.value;
+                setPresetId(v);
+              }}
+            >
+              {presets.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+          )}
           <button
             className={onion ? "primary" : "ghost"}
             onClick={() => setOnion((v) => !v)}
@@ -647,14 +653,14 @@ export function OverlayEditor({
           >
               <img
                 className="overlay-plate"
-                src={overlayImageUrl(screen.id, "plate", plateBust)}
+                src={overlayImageUrl(screen.id, "plate", activePreset, plateBust)}
                 alt="plate"
                 draggable={false}
               />
               {onion && (
                 <img
                   className="overlay-onion"
-                  src={overlayImageUrl(screen.id, "source", plateBust)}
+                  src={overlayImageUrl(screen.id, "source", activePreset, plateBust)}
                   alt="source"
                   draggable={false}
                 />

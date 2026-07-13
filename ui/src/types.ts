@@ -89,13 +89,21 @@ export interface ScreenComposition {
   headlineText?: Record<string, string>;
 }
 
+export interface ScreenVariant {
+  overlay?: OverlayScreenData;
+  composition?: ScreenComposition;
+}
+
 export interface ScreenTemplate {
   id: string;
   name: string;
   kind?: ScreenKind;
   stringKeys: string[];
+  variants?: Record<string, ScreenVariant>;
+  /** @deprecated legacy — use variants[presetId].overlay */
   overlay?: OverlayScreenData;
   headline: Record<string, string>;
+  /** @deprecated legacy — use variants[presetId].composition */
   composition?: ScreenComposition;
   presetIds: string[];
 }

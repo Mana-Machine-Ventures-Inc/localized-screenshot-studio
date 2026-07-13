@@ -6,6 +6,11 @@ import {
   type ProjectPaths,
 } from "./paths.js";
 import * as catalog from "./catalog/index.js";
+import {
+  getScreenPresetIds,
+  migrateScreen,
+  normalizeScreen,
+} from "./screens/variants.js";
 import type {
   AppStoreMetadataConfig,
   AssetCell,
@@ -82,6 +87,10 @@ class Store {
         ...DEFAULT_COMPOSITOR,
         ...this.config.compositor,
       };
+      // Migrate legacy screen format (top-level overlay/composition) to variants.
+      const before = JSON.stringify(this.config.screens);
+      this.config.screens = this.config.screens.map((s) => normalizeScreen(s));
+      if (JSON.stringify(this.config.screens) !== before) this.save();
     } else {
       this.config = {
         projectPath: root,
@@ -108,14 +117,16 @@ class Store {
 
   upsertScreen(screen: ScreenTemplate): void {
     const cfg = this.getConfig();
-    const idx = cfg.screens.findIndex((s) => s.id === screen.id);
-    if (idx >= 0) cfg.screens[idx] = screen;
-    else cfg.screens.push(screen);
+    const normalized = normalizeScreen(screen);
+    const idx = cfg.screens.findIndex((s) => s.id === normalized.id);
+    if (idx >= 0) cfg.screens[idx] = normalized;
+    else cfg.screens.push(normalized);
     this.save();
   }
 
   getScreen(id: string): ScreenTemplate | undefined {
-    return this.getConfig().screens.find((s) => s.id === id);
+    const s = this.getConfig().screens.find((sc) => sc.id === id);
+    return s ? migrateScreen(s) : undefined;
   }
 
   removeScreen(id: string): void {
@@ -177,9 +188,7 @@ class Store {
     const now = new Date().toISOString();
     const wanted = new Set<string>();
     for (const screen of cfg.screens) {
-      const presetIds = screen.presetIds.length
-        ? screen.presetIds
-        : cfg.presetIds;
+      const presetIds = getScreenPresetIds(screen, cfg.presetIds);
       for (const locale of locales) {
         for (const presetId of presetIds) {
           const id = cellId(screen.id, locale, presetId);
@@ -251,6 +260,14 @@ class Store {
     const cfg = this.getConfig();
     cfg.baseLocale = locale;
     this.save();
+  }
+
+  /** Set the device presets this project ships, then re-sync the cell matrix. */
+  setPresetIds(ids: string[]): void {
+    const cfg = this.getConfig();
+    cfg.presetIds = ids;
+    this.save();
+    this.reconcileCells(this.data?.locales ?? [cfg.baseLocale]);
   }
 
   /**

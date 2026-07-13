@@ -2,7 +2,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { store } from "../store.js";
 import { PRESETS } from "../capture/presets.js";
-import type { DevicePreset, ScreenTemplate, TextSlot } from "../types.js";
+import {
+  ensureVariant,
+  getOverlay,
+  getScreenPresetIds,
+  primaryPresetId,
+  removeVariant,
+  setVariantOverlay,
+} from "../screens/variants.js";
+import type { DevicePreset, OverlayScreenData, ScreenTemplate, TextSlot } from "../types.js";
 import { detectText, type OcrResult } from "./ocr.js";
 import { matchText } from "./match.js";
 import {
@@ -49,7 +57,6 @@ function uniqueScreenId(base: string): string {
   return `${base}-${i}`;
 }
 
-/** Choose the device preset whose aspect ratio best matches the upload. */
 function bestPreset(width: number, height: number): DevicePreset {
   const ratio = width / height;
   let best = PRESETS[0];
@@ -62,6 +69,10 @@ function bestPreset(width: number, height: number): DevicePreset {
     }
   }
   return best;
+}
+
+function variantAssetBase(screenId: string, presetId: string): string {
+  return `${screenId}__${presetId}`;
 }
 
 async function buildSlots(
@@ -132,47 +143,50 @@ export async function createOverlayScreen(
 
   const { buffer, ext } = decodeDataUrl(input.imageDataUrl);
   const id = uniqueScreenId(slugify(input.name));
-  const sourceAbs = path.join(paths.overlayDir, `${id}__source.${ext}`);
-  fs.mkdirSync(paths.overlayDir, { recursive: true });
-  fs.writeFileSync(sourceAbs, buffer);
-
-  const ocr = await detectText(sourceAbs);
 
   const sharp = (await import("sharp")).default;
-  const meta = await sharp(sourceAbs).metadata();
-  const W = meta.width ?? 1;
-  const H = meta.height ?? 1;
-
-  const slots = await buildSlots(buffer, ocr, sourceLocale, W, H);
-
-  const plateAbs = path.join(paths.overlayDir, `${id}__plate.png`);
-  await buildPlate(sourceAbs, slots, plateAbs);
+  const metaProbe = await sharp(buffer).metadata();
+  const W = metaProbe.width ?? 1;
+  const H = metaProbe.height ?? 1;
 
   const preset = input.presetId
     ? PRESETS.find((p) => p.id === input.presetId) ?? bestPreset(W, H)
     : bestPreset(W, H);
 
+  const base = variantAssetBase(id, preset.id);
+  const sourceAbs = path.join(paths.overlayDir, `${base}__source.${ext}`);
+  fs.mkdirSync(paths.overlayDir, { recursive: true });
+  fs.writeFileSync(sourceAbs, buffer);
+
+  const ocr = await detectText(sourceAbs);
+  const slots = await buildSlots(buffer, ocr, sourceLocale, W, H);
+  const plateAbs = path.join(paths.overlayDir, `${base}__plate.png`);
+  await buildPlate(sourceAbs, slots, plateAbs);
+
+  const overlay: OverlayScreenData = {
+    sourceLocale,
+    sourceImagePath: path.relative(paths.dataDir, sourceAbs),
+    platePath: path.relative(paths.dataDir, plateAbs),
+    plateWidth: W,
+    plateHeight: H,
+    slots,
+  };
+
   const now = new Date().toISOString();
-  const screen: ScreenTemplate = {
+  let screen: ScreenTemplate = {
     id,
     name: input.name,
     kind: "overlay",
     stringKeys: slots.map((s) => s.linkedKey).filter((k): k is string => !!k),
     headline: {},
     presetIds: [preset.id],
+    variants: { [preset.id]: { overlay } },
     createdAt: now,
     updatedAt: now,
-    overlay: {
-      sourceLocale,
-      sourceImagePath: path.relative(paths.dataDir, sourceAbs),
-      platePath: path.relative(paths.dataDir, plateAbs),
-      plateWidth: W,
-      plateHeight: H,
-      slots,
-    },
   };
   store.upsertScreen(screen);
   store.reconcileCells(store.getData()?.locales ?? [cfg.baseLocale]);
+  screen = store.getScreen(id)!;
 
   return {
     screen,
@@ -182,185 +196,142 @@ export async function createOverlayScreen(
   };
 }
 
-const DEVICE_CLASS_NAME: Record<string, string> = {
-  ios: "iPhone",
-  ipados: "iPad",
-  macos: "Mac",
-};
-
-/** Suggest "<Base name> (Mac)" for a duplicate targeting a device class. */
-function defaultDuplicateName(source: ScreenTemplate, presetIds: string[]): string {
-  const preset = PRESETS.find((p) => p.id === presetIds[0]);
-  const cls = preset ? DEVICE_CLASS_NAME[preset.platform] ?? preset.platform : "Copy";
-  const base = source.name.replace(/\s*\([^)]*\)\s*$/, "").trim() || source.name;
-  return `${base} (${cls})`;
+export interface AddVariantInput {
+  presetId: string;
+  /** Copy composition from this preset (defaults to the screen's primary). */
+  copyFromPresetId?: string;
 }
 
-export interface DuplicateScreenInput {
-  /** device presets the new screen targets (defaults to the source's). */
-  presetIds?: string[];
-  /** override the auto-generated name. */
-  name?: string;
-}
-
-/**
- * Clone a screen's theming (composition + headline mapping) into a brand-new
- * screen that targets a different device class. The clone has no overlay yet —
- * the user supplies a fresh screenshot in the Screens tab — so this is the
- * "make a macOS version of my iPad screen" primitive: same background, headline
- * color, and copy selection, new screenshot and device size.
- */
-export function duplicateScreen(
-  sourceId: string,
-  input: DuplicateScreenInput = {},
+/** Add a device variant to an existing screen (composition only — no overlay yet). */
+export function addScreenVariant(
+  screenId: string,
+  input: AddVariantInput,
 ): ScreenTemplate {
   if (!store.isOpen()) throw new Error("No project is open");
-  const source = store.getScreen(sourceId);
-  if (!source) throw new Error(`Unknown screen: ${sourceId}`);
-  const cfg = store.getConfig();
+  const screen = store.getScreen(screenId);
+  if (!screen) throw new Error(`Unknown screen: ${screenId}`);
+  if (!PRESETS.some((p) => p.id === input.presetId)) {
+    throw new Error(`Unknown preset: ${input.presetId}`);
+  }
+  const existing = getScreenPresetIds(screen);
+  if (existing.includes(input.presetId)) {
+    throw new Error(`Variant for ${input.presetId} already exists`);
+  }
 
-  const requested = (input.presetIds ?? source.presetIds).filter((id) =>
-    PRESETS.some((p) => p.id === id),
+  const next = ensureVariant(
+    screen,
+    input.presetId,
+    input.copyFromPresetId ?? primaryPresetId(screen),
   );
-  const presetIds = requested.length ? requested : source.presetIds;
+  next.updatedAt = new Date().toISOString();
+  store.upsertScreen(next);
+  store.reconcileCells(
+    store.getData()?.locales ?? [store.getConfig().baseLocale],
+  );
+  return store.getScreen(screenId)!;
+}
 
-  const name = input.name?.trim() || defaultDuplicateName(source, presetIds);
-  const id = uniqueScreenId(slugify(name));
-  const now = new Date().toISOString();
+/** Remove a device variant from a screen. */
+export function removeScreenVariant(
+  screenId: string,
+  presetId: string,
+): ScreenTemplate {
+  const screen = store.getScreen(screenId);
+  if (!screen) throw new Error(`Unknown screen: ${screenId}`);
+  const ids = getScreenPresetIds(screen);
+  if (ids.length <= 1) {
+    throw new Error("Cannot remove the last device variant");
+  }
+  const next = removeVariant(screen, presetId);
+  next.updatedAt = new Date().toISOString();
+  store.upsertScreen(next);
+  store.reconcileCells(
+    store.getData()?.locales ?? [store.getConfig().baseLocale],
+  );
+  return store.getScreen(screenId)!;
+}
 
-  const screen: ScreenTemplate = {
-    id,
-    name,
-    kind: "overlay",
-    stringKeys: [],
-    headline: { ...source.headline },
-    // Deep-clone the composition so edits to the clone don't mutate the source.
-    composition: source.composition
-      ? (JSON.parse(JSON.stringify(source.composition)) as ScreenTemplate["composition"])
-      : undefined,
-    presetIds,
-    createdAt: now,
-    updatedAt: now,
-    // No overlay: the clone awaits its own screenshot.
-  };
-  store.upsertScreen(screen);
-  store.reconcileCells(store.getData()?.locales ?? [cfg.baseLocale]);
-  return screen;
+/** @deprecated Use addScreenVariant — kept for API compatibility. */
+export function duplicateScreen(
+  sourceId: string,
+  input: { presetIds?: string[]; name?: string } = {},
+): ScreenTemplate {
+  const presetId = input.presetIds?.[0];
+  if (!presetId) throw new Error("presetIds[0] is required");
+  return addScreenVariant(sourceId, { presetId });
 }
 
 export interface UpdateOverlayInput {
   name?: string;
   sourceLocale?: string;
   slots?: TextSlot[];
-  /** device presets this screen targets (validated against known presets). */
-  presetIds?: string[];
+  /** Which device variant to update (defaults to primary). */
+  presetId?: string;
 }
 
-/** Save edits to an overlay screen; rebuilds the plate when slots change. */
+/** Save edits to an overlay variant; rebuilds the plate when slots change. */
 export async function updateOverlayScreen(
   screenId: string,
   input: UpdateOverlayInput,
 ): Promise<ScreenTemplate> {
-  const screen = store.getScreen(screenId);
-  if (!screen || !screen.overlay) {
-    throw new Error(`Unknown overlay screen: ${screenId}`);
+  let screen = store.getScreen(screenId);
+  if (!screen) throw new Error(`Unknown screen: ${screenId}`);
+  const presetId = input.presetId ?? primaryPresetId(screen);
+  const overlay = getOverlay(screen, presetId);
+  if (!overlay) {
+    throw new Error(`Screen ${screenId} has no overlay for ${presetId}`);
   }
   const paths = store.getPaths();
   if (input.name) screen.name = input.name;
-  if (input.sourceLocale) screen.overlay.sourceLocale = input.sourceLocale;
-
-  let presetsChanged = false;
-  if (input.presetIds && input.presetIds.length) {
-    const valid = input.presetIds.filter((id) =>
-      PRESETS.some((p) => p.id === id),
-    );
-    if (valid.length && valid.join() !== screen.presetIds.join()) {
-      screen.presetIds = valid;
-      presetsChanged = true;
-    }
-  }
+  if (input.sourceLocale) overlay.sourceLocale = input.sourceLocale;
 
   if (input.slots) {
-    screen.overlay.slots = input.slots;
-    screen.stringKeys = input.slots
-      .map((s) => s.linkedKey)
-      .filter((k): k is string => !!k);
-    const sourceAbs = path.join(paths.dataDir, screen.overlay.sourceImagePath);
-    const plateAbs = path.join(paths.dataDir, screen.overlay.platePath);
+    overlay.slots = input.slots;
+    const sourceAbs = path.join(paths.dataDir, overlay.sourceImagePath);
+    const plateAbs = path.join(paths.dataDir, overlay.platePath);
     await buildPlate(sourceAbs, input.slots, plateAbs);
+    screen = setVariantOverlay(screen, presetId, overlay);
+  } else if (input.sourceLocale) {
+    screen = setVariantOverlay(screen, presetId, overlay);
   }
 
   screen.updatedAt = new Date().toISOString();
   store.upsertScreen(screen);
-  // New presets need their own cell matrix entries; old ones get pruned.
-  if (presetsChanged) {
-    store.reconcileCells(
-      store.getData()?.locales ?? [store.getConfig().baseLocale],
-    );
-  }
-  return screen;
+  return store.getScreen(screenId)!;
 }
 
-/**
- * Replace an overlay screen's source screenshot (e.g. a new app version) — or
- * attach the *first* screenshot to a screen that has none yet (e.g. one created
- * by "Duplicate for device"). When the screen has no overlay we always run OCR
- * to build its text slots and clean plate from scratch.
- */
+/** Replace a variant's source screenshot or attach the first one. */
 export async function replaceOverlaySource(
   screenId: string,
   imageDataUrl: string,
   reocr: boolean,
+  presetId?: string,
 ): Promise<ScreenTemplate> {
-  const screen = store.getScreen(screenId);
+  let screen = store.getScreen(screenId);
   if (!screen) throw new Error(`Unknown screen: ${screenId}`);
+  const pid = presetId ?? primaryPresetId(screen);
   const paths = store.getPaths();
   const { buffer, ext } = decodeDataUrl(imageDataUrl);
   fs.mkdirSync(paths.overlayDir, { recursive: true });
 
-  // First screenshot for an overlay-less screen: initialize the overlay.
-  if (!screen.overlay) {
-    const sourceLocale = store.getConfig().baseLocale;
-    const sourceAbs = path.join(paths.overlayDir, `${screenId}__source.${ext}`);
-    fs.writeFileSync(sourceAbs, buffer);
+  let overlay = getOverlay(screen, pid);
+  const sourceLocale =
+    overlay?.sourceLocale ?? store.getConfig().baseLocale;
 
-    const sharpInit = (await import("sharp")).default;
-    const metaInit = await sharpInit(sourceAbs).metadata();
-    const W = metaInit.width ?? 1;
-    const H = metaInit.height ?? 1;
-
-    const ocr = await detectText(sourceAbs);
-    const slots = await buildSlots(buffer, ocr, sourceLocale, W, H);
-    const plateAbs = path.join(paths.overlayDir, `${screenId}__plate.png`);
-    await buildPlate(sourceAbs, slots, plateAbs);
-
-    screen.kind = "overlay";
-    screen.overlay = {
-      sourceLocale,
-      sourceImagePath: path.relative(paths.dataDir, sourceAbs),
-      platePath: path.relative(paths.dataDir, plateAbs),
-      plateWidth: W,
-      plateHeight: H,
-      slots,
-    };
-    screen.stringKeys = slots
-      .map((s) => s.linkedKey)
-      .filter((k): k is string => !!k);
-    screen.updatedAt = new Date().toISOString();
-    store.upsertScreen(screen);
-    store.reconcileCells(
-      store.getData()?.locales ?? [store.getConfig().baseLocale],
-    );
-    return screen;
+  if (!overlay) {
+    screen = ensureVariant(screen, pid, primaryPresetId(screen));
   }
 
-  const oldAbs = path.join(paths.dataDir, screen.overlay.sourceImagePath);
-  const sourceAbs = path.join(paths.overlayDir, `${screenId}__source.${ext}`);
-  if (oldAbs !== sourceAbs && fs.existsSync(oldAbs)) {
-    try {
-      fs.rmSync(oldAbs);
-    } catch {
-      /* ignore */
+  const base = variantAssetBase(screenId, pid);
+  const sourceAbs = path.join(paths.overlayDir, `${base}__source.${ext}`);
+  if (overlay?.sourceImagePath) {
+    const oldAbs = path.join(paths.dataDir, overlay.sourceImagePath);
+    if (oldAbs !== sourceAbs && fs.existsSync(oldAbs)) {
+      try {
+        fs.rmSync(oldAbs);
+      } catch {
+        /* ignore */
+      }
     }
   }
   fs.writeFileSync(sourceAbs, buffer);
@@ -369,41 +340,59 @@ export async function replaceOverlaySource(
   const meta = await sharp(sourceAbs).metadata();
   const W = meta.width ?? 1;
   const H = meta.height ?? 1;
-  screen.overlay.sourceImagePath = path.relative(paths.dataDir, sourceAbs);
-  screen.overlay.plateWidth = W;
-  screen.overlay.plateHeight = H;
 
-  if (reocr) {
+  const hadOverlay = Boolean(getOverlay(screen, pid));
+  overlay = getOverlay(screen, pid) ?? {
+    sourceLocale,
+    sourceImagePath: path.relative(paths.dataDir, sourceAbs),
+    platePath: path.relative(paths.dataDir, `${base}__plate.png`),
+    plateWidth: W,
+    plateHeight: H,
+    slots: [],
+  };
+
+  overlay.sourceImagePath = path.relative(paths.dataDir, sourceAbs);
+  overlay.platePath = path.relative(
+    paths.dataDir,
+    path.join(paths.overlayDir, `${base}__plate.png`),
+  );
+  overlay.plateWidth = W;
+  overlay.plateHeight = H;
+
+  if (!hadOverlay || reocr) {
     const ocr = await detectText(sourceAbs);
-    screen.overlay.slots = await buildSlots(
-      buffer,
-      ocr,
-      screen.overlay.sourceLocale,
-      W,
-      H,
-    );
-    screen.stringKeys = screen.overlay.slots
-      .map((s) => s.linkedKey)
-      .filter((k): k is string => !!k);
+    overlay.slots = await buildSlots(buffer, ocr, sourceLocale, W, H);
   }
 
-  const plateAbs = path.join(paths.dataDir, screen.overlay.platePath);
-  await buildPlate(sourceAbs, screen.overlay.slots, plateAbs);
+  const plateAbs = path.join(paths.dataDir, overlay.platePath);
+  await buildPlate(sourceAbs, overlay.slots, plateAbs);
+
+  screen = setVariantOverlay(screen, pid, overlay);
+  screen.kind = "overlay";
   screen.updatedAt = new Date().toISOString();
   store.upsertScreen(screen);
-  return screen;
+  if (!hadOverlay) {
+    store.reconcileCells(
+      store.getData()?.locales ?? [store.getConfig().baseLocale],
+    );
+  }
+  return store.getScreen(screenId)!;
 }
 
 /** Force a rebuild of the clean plate from the current slots. */
-export async function rebuildPlate(screenId: string): Promise<ScreenTemplate> {
+export async function rebuildPlate(
+  screenId: string,
+  presetId?: string,
+): Promise<ScreenTemplate> {
   const screen = store.getScreen(screenId);
-  if (!screen || !screen.overlay) {
-    throw new Error(`Unknown overlay screen: ${screenId}`);
-  }
+  if (!screen) throw new Error(`Unknown screen: ${screenId}`);
+  const pid = presetId ?? primaryPresetId(screen);
+  const overlay = getOverlay(screen, pid);
+  if (!overlay) throw new Error(`No overlay for ${screenId}/${pid}`);
   const paths = store.getPaths();
-  const sourceAbs = path.join(paths.dataDir, screen.overlay.sourceImagePath);
-  const plateAbs = path.join(paths.dataDir, screen.overlay.platePath);
-  await buildPlate(sourceAbs, screen.overlay.slots, plateAbs);
+  const sourceAbs = path.join(paths.dataDir, overlay.sourceImagePath);
+  const plateAbs = path.join(paths.dataDir, overlay.platePath);
+  await buildPlate(sourceAbs, overlay.slots, plateAbs);
   return screen;
 }
 
@@ -411,10 +400,14 @@ export async function rebuildPlate(screenId: string): Promise<ScreenTemplate> {
 export async function sampleSlotColors(
   screenId: string,
   boxNorm: { x: number; y: number; w: number; h: number },
+  presetId?: string,
 ): Promise<{ background: string; textColor: string }> {
   const screen = store.getScreen(screenId);
-  if (!screen?.overlay) throw new Error(`Unknown overlay screen: ${screenId}`);
-  const { plateWidth: W, plateHeight: H, sourceImagePath } = screen.overlay;
+  if (!screen) throw new Error(`Unknown screen: ${screenId}`);
+  const pid = presetId ?? primaryPresetId(screen);
+  const overlay = getOverlay(screen, pid);
+  if (!overlay) throw new Error(`No overlay for ${screenId}/${pid}`);
+  const { plateWidth: W, plateHeight: H, sourceImagePath } = overlay;
   const sourceAbs = path.join(store.getPaths().dataDir, sourceImagePath);
   const boxPx = {
     x: boxNorm.x * W,
@@ -426,17 +419,19 @@ export async function sampleSlotColors(
   return { background, textColor: contrastTextColor(background) };
 }
 
-/** Absolute path to an overlay screen's source or plate image. */
+/** Absolute path to a variant's source or plate image. */
 export function overlayImagePath(
   screenId: string,
   which: "source" | "plate",
+  presetId?: string,
 ): string | null {
   const screen = store.getScreen(screenId);
-  if (!screen?.overlay) return null;
+  if (!screen) return null;
+  const pid = presetId ?? primaryPresetId(screen);
+  const overlay = getOverlay(screen, pid);
+  if (!overlay) return null;
   const rel =
-    which === "source"
-      ? screen.overlay.sourceImagePath
-      : screen.overlay.platePath;
+    which === "source" ? overlay.sourceImagePath : overlay.platePath;
   const abs = path.join(store.getPaths().dataDir, rel);
   return fs.existsSync(abs) ? abs : null;
 }

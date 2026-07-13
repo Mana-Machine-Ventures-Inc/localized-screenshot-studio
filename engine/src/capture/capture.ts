@@ -3,6 +3,7 @@ import path from "node:path";
 import { chromium, type Browser } from "playwright";
 import { getPreset } from "./presets.js";
 import { renderOverlayHtml } from "../overlay/render.js";
+import { getOverlay } from "../screens/variants.js";
 import { store } from "../store.js";
 import type { AssetCell, DevicePreset, ScreenTemplate } from "../types.js";
 import { cellId } from "../store.js";
@@ -34,8 +35,10 @@ export class CaptureEngine {
     preset: DevicePreset,
   ): Promise<CaptureResult> {
     const paths = store.getPaths();
-    if (!screen.overlay) {
-      throw new Error(`Screen ${screen.id} has no source screenshot to render`);
+    if (!getOverlay(screen, preset.id)) {
+      throw new Error(
+        `Screen ${screen.id} has no source screenshot for ${preset.id}`,
+      );
     }
     const html = renderOverlayHtml(screen, locale, preset);
 

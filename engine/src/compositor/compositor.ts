@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import sharp from "sharp";
 import { getPreset } from "../capture/presets.js";
+import { getComposition } from "../screens/variants.js";
 import { store } from "../store.js";
 import type {
   AssetCell,
@@ -270,9 +271,13 @@ export function resolveCompositor(
   };
 }
 
-/** Resolve a screen's effective composition, falling back to the global one. */
-export function effectiveComposition(screen: ScreenTemplate): ScreenComposition {
-  if (screen.composition) return screen.composition;
+/** Resolve a screen variant's effective composition, falling back to the global one. */
+export function effectiveComposition(
+  screen: ScreenTemplate,
+  presetId: string,
+): ScreenComposition {
+  const variant = getComposition(screen, presetId);
+  if (variant) return variant;
   const g = store.getConfig().compositor;
   return {
     mode: "device",
@@ -325,7 +330,7 @@ export async function composeCell(cell: AssetCell): Promise<AssetCell> {
   const screen = store.getScreen(cell.screenId);
   if (!screen) throw new Error(`Unknown screen: ${cell.screenId}`);
   const preset = getPreset(cell.presetId);
-  const comp = effectiveComposition(screen);
+  const comp = effectiveComposition(screen, cell.presetId);
   const paths = store.getPaths();
   const outPath = path.join(
     paths.composedDir,

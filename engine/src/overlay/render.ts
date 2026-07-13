@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { store } from "../store.js";
+import { getOverlay } from "../screens/variants.js";
 import type {
   DesignTokens,
   DevicePreset,
@@ -108,8 +109,8 @@ export function renderOverlayHtml(
   locale: string,
   preset: DevicePreset,
 ): string {
-  const overlay = screen.overlay;
-  if (!overlay) throw new Error(`Screen ${screen.id} is not an overlay screen`);
+  const overlay = getOverlay(screen, preset.id);
+  if (!overlay) throw new Error(`Screen ${screen.id} has no overlay for ${preset.id}`);
   const data = store.getData();
   const tokens: DesignTokens =
     data?.tokens ?? { colors: {}, colorsDark: {}, fonts: [], sfSymbols: [] };

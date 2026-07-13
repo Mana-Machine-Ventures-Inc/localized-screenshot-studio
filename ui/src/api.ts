@@ -88,7 +88,7 @@ export const api = {
   getPresets: () => req<DevicePreset[]>("GET", "/api/presets"),
   getFonts: () =>
     req<{ fonts: ProjectFont[] }>("GET", "/api/fonts"),
-  setSettings: (input: { baseLocale?: string }) =>
+  setSettings: (input: { baseLocale?: string; presetIds?: string[] }) =>
     req<{ config: ProjectConfig; data: ProjectSummary }>(
       "PUT",
       "/api/project/settings",
@@ -151,6 +151,20 @@ export const api = {
       `/api/screens/${screenId}/duplicate`,
       opts,
     ),
+  addScreenVariant: (
+    screenId: string,
+    opts: { presetId: string; copyFromPresetId?: string },
+  ) =>
+    req<{ screen: ScreenTemplate; config: ProjectConfig }>(
+      "POST",
+      `/api/screens/${screenId}/variants`,
+      opts,
+    ),
+  removeScreenVariant: (screenId: string, presetId: string) =>
+    req<{ screen: ScreenTemplate; config: ProjectConfig }>(
+      "DELETE",
+      `/api/screens/${screenId}/variants/${encodeURIComponent(presetId)}`,
+    ),
   setCompositor: (patch: Partial<CompositorConfig>) =>
     req<{ compositor: CompositorConfig }>("PUT", "/api/compositor", patch),
   setDeviceTypography: (
@@ -162,23 +176,37 @@ export const api = {
       `/api/compositor/device/${encodeURIComponent(deviceClass)}`,
       patch,
     ),
-  setComposition: (screenId: string, composition: ScreenComposition) =>
+  setComposition: (
+    screenId: string,
+    composition: ScreenComposition,
+    presetId?: string,
+  ) =>
     req<{ screen: ScreenTemplate }>(
       "PUT",
       `/api/screens/${screenId}/composition`,
-      { composition },
+      { composition, presetId },
     ),
-  createHeadline: (screenId: string, text: string, key?: string) =>
+  createHeadline: (
+    screenId: string,
+    text: string,
+    key?: string,
+    presetId?: string,
+  ) =>
     req<{ screen: ScreenTemplate; key: string }>(
       "POST",
       `/api/screens/${screenId}/composition/headline`,
-      { text, key },
+      { text, key, presetId },
     ),
-  replaceSource: (screenId: string, imageDataUrl: string, reocr: boolean) =>
+  replaceSource: (
+    screenId: string,
+    imageDataUrl: string,
+    reocr: boolean,
+    presetId?: string,
+  ) =>
     req<{ screen: ScreenTemplate }>(
       "POST",
       `/api/overlay/screens/${screenId}/source`,
-      { imageDataUrl, reocr },
+      { imageDataUrl, reocr, presetId },
     ),
   setHeadline: (screenId: string, locale: string, value: string) =>
     req<ScreenTemplate>("POST", `/api/screens/${screenId}/headline`, {
@@ -203,7 +231,7 @@ export const api = {
       name?: string;
       sourceLocale?: string;
       slots?: TextSlot[];
-      presetIds?: string[];
+      presetId?: string;
     },
   ) =>
     req<{ screen: ScreenTemplate }>(
@@ -211,19 +239,21 @@ export const api = {
       `/api/overlay/screens/${screenId}`,
       input,
     ),
-  rebuildPlate: (screenId: string) =>
+  rebuildPlate: (screenId: string, presetId?: string) =>
     req<{ screen: ScreenTemplate }>(
       "POST",
       `/api/overlay/screens/${screenId}/plate`,
+      { presetId },
     ),
   sampleColors: (
     screenId: string,
     box: { x: number; y: number; w: number; h: number },
+    presetId?: string,
   ) =>
     req<{ background: string; textColor: string }>(
       "POST",
       `/api/overlay/screens/${screenId}/sample`,
-      { box },
+      { box, presetId },
     ),
   capture: (sel: CellSelector) =>
     req<{ cells: AssetCell[] }>("POST", "/api/capture", sel),
@@ -282,9 +312,12 @@ export function renderUrl(
 export function overlayImageUrl(
   screenId: string,
   which: "source" | "plate",
+  presetId?: string,
   bust?: number,
 ): string {
-  return `${API_BASE}/overlay/${screenId}/${which}?t=${bust ?? Date.now()}`;
+  const q = new URLSearchParams({ t: String(bust ?? Date.now()) });
+  if (presetId) q.set("preset", presetId);
+  return `${API_BASE}/overlay/${screenId}/${which}?${q}`;
 }
 
 /** Subscribe to upload job progress via Server-Sent Events. */

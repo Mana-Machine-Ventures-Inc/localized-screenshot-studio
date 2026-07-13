@@ -1,14 +1,19 @@
-import { useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import type { DevicePreset, ProjectConfig, ProjectSummary } from "../types";
 import { OverlayEditor } from "../components/OverlayEditor";
+import { CompositionPanel } from "../components/CompositionPanel";
 import { OverlayUploadModal } from "../components/OverlayUploadModal";
+import {
+  getOverlay,
+  getScreenPresetIds,
+  primaryPresetId,
+} from "../screens/variants";
 
 interface Props {
   config: ProjectConfig;
   summary: ProjectSummary;
   presets: DevicePreset[];
-  activePreset: string;
   reload: () => Promise<void>;
   selectedId?: string;
   onSelect: (id: string | undefined) => void;
@@ -29,7 +34,6 @@ export function ScreensTab({
   config,
   summary,
   presets,
-  activePreset,
   reload,
   selectedId,
   onSelect,
@@ -39,21 +43,47 @@ export function ScreensTab({
   const overlayScreens = config.screens.filter((s) => s.kind === "overlay");
   const [showUpload, setShowUpload] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
-  // Inline two-step delete confirm (window.confirm is a no-op in the Tauri webview).
   const [armDelete, setArmDelete] = useState(false);
+  const [armRemoveVariant, setArmRemoveVariant] = useState(false);
+  const [addPreset, setAddPreset] = useState("");
   const armTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const swapInput = useRef<HTMLInputElement>(null);
   const reocrRef = useRef(false);
+
+  const selected =
+    config.screens.find((s) => s.id === selectedId && s.kind === "overlay") ??
+    overlayScreens[0];
+
+  const variantIds = selected
+    ? getScreenPresetIds(selected, config.presetIds)
+    : [];
+
+  const [variantPresetId, setVariantPresetId] = useState(
+    selected ? primaryPresetId(selected) : config.presetIds[0] ?? "iphone-6-9",
+  );
+
+  useEffect(() => {
+    if (!selected) return;
+    const ids = getScreenPresetIds(selected, config.presetIds);
+    if (!ids.includes(variantPresetId)) {
+      setVariantPresetId(ids[0] ?? primaryPresetId(selected));
+    }
+  }, [selected?.id, config.presetIds, variantPresetId, selected]);
+
+  const availableToAdd = useMemo(() => {
+    if (!selected) return presets;
+    const have = new Set(getScreenPresetIds(selected, config.presetIds));
+    return presets.filter((p) => config.presetIds.includes(p.id) && !have.has(p.id));
+  }, [selected, presets, config.presetIds]);
+
+  const presetLabel = (id: string) =>
+    presets.find((p) => p.id === id)?.label ?? id;
 
   const armDeleteOnce = () => {
     setArmDelete(true);
     if (armTimer.current) clearTimeout(armTimer.current);
     armTimer.current = setTimeout(() => setArmDelete(false), 4000);
   };
-
-  const selected =
-    config.screens.find((s) => s.id === selectedId && s.kind === "overlay") ??
-    overlayScreens[0];
 
   const create = async (input: {
     name: string;
@@ -67,6 +97,7 @@ export function ScreensTab({
       setShowUpload(false);
       await reload();
       onSelect(res.screen.id);
+      setVariantPresetId(primaryPresetId(res.screen));
     } finally {
       setBusy(null);
     }
@@ -77,7 +108,12 @@ export function ScreensTab({
     setBusy("Swapping image");
     try {
       const dataUrl = await readFileAsDataUrl(file);
-      await api.replaceSource(selected.id, dataUrl, reocrRef.current);
+      await api.replaceSource(
+        selected.id,
+        dataUrl,
+        reocrRef.current,
+        variantPresetId,
+      );
       await reload();
     } finally {
       setBusy(null);
@@ -111,8 +147,39 @@ export function ScreensTab({
     }
   };
 
+  const addVariant = async () => {
+    if (!selected || !addPreset) return;
+    setBusy("Adding device");
+    try {
+      await api.addScreenVariant(selected.id, { presetId: addPreset });
+      setVariantPresetId(addPreset);
+      setAddPreset("");
+      await reload();
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const removeVariant = async () => {
+    if (!selected || variantIds.length <= 1) return;
+    setBusy("Removing device");
+    try {
+      await api.removeScreenVariant(selected.id, variantPresetId);
+      const remaining = variantIds.filter((id) => id !== variantPresetId);
+      setVariantPresetId(remaining[0] ?? config.presetIds[0]);
+      await reload();
+    } finally {
+      setBusy(null);
+      setArmRemoveVariant(false);
+    }
+  };
+
+  const variantHasOverlay = selected
+    ? Boolean(getOverlay(selected, variantPresetId))
+    : false;
+
   return (
-    <div className="tab-content screens-tab">
+    <div className="tab-content screens-tab unified-screens">
       <div className="toolbar">
         <div className="field inline">
           <label>Screen</label>
@@ -129,6 +196,61 @@ export function ScreensTab({
             {!overlayScreens.length && <option value="">No screens yet</option>}
           </select>
         </div>
+
+        {selected && variantIds.length > 0 && (
+          <div className="variant-tabs seg">
+            {variantIds.map((id) => (
+              <button
+                key={id}
+                className={id === variantPresetId ? "on" : ""}
+                onClick={() => setVariantPresetId(id)}
+                title={presetLabel(id)}
+              >
+                {presetLabel(id)}
+                {!getOverlay(selected, id) && " ○"}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {selected && availableToAdd.length > 0 && (
+          <div className="row" style={{ gap: 6 }}>
+            <select
+              value={addPreset}
+              onChange={(e) => setAddPreset(e.target.value)}
+              style={{ maxWidth: 140 }}
+            >
+              <option value="">+ device…</option>
+              {availableToAdd.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+            <button
+              className="ghost mini"
+              disabled={!addPreset || !!busy}
+              onClick={() => void addVariant()}
+            >
+              Add
+            </button>
+          </div>
+        )}
+
+        <div className="field inline">
+          <label>Preview</label>
+          <select
+            value={previewLocale}
+            onChange={(e) => onPreviewLocale(e.target.value)}
+          >
+            {summary.locales.map((l) => (
+              <option key={l} value={l}>
+                {l}
+              </option>
+            ))}
+          </select>
+        </div>
+
         {selected && (
           <>
             <button className="ghost" onClick={() => void rename()} disabled={!!busy}>
@@ -144,34 +266,38 @@ export function ScreensTab({
             >
               Swap image
             </button>
-            <button
-              className="ghost"
-              onClick={() => {
-                reocrRef.current = true;
-                swapInput.current?.click();
-              }}
-              disabled={!!busy}
-              title="Replace the screenshot and re-run text detection"
-            >
-              Swap &amp; re-detect
-            </button>
+            {variantIds.length > 1 && (
+              <button
+                className="ghost danger"
+                onClick={() => {
+                  if (armRemoveVariant) {
+                    void removeVariant();
+                  } else {
+                    setArmRemoveVariant(true);
+                    setTimeout(() => setArmRemoveVariant(false), 4000);
+                  }
+                }}
+                disabled={!!busy}
+              >
+                {armRemoveVariant ? "Confirm remove device" : "Remove device"}
+              </button>
+            )}
             <button
               className="danger"
               onClick={() => {
                 if (armDelete) {
-                  setArmDelete(false);
                   void remove();
                 } else {
                   armDeleteOnce();
                 }
               }}
               disabled={!!busy}
-              title={`Delete “${selected.name}” and its captures`}
             >
-              {armDelete ? "Click to confirm" : "Delete"}
+              {armDelete ? "Confirm delete" : "Delete screen"}
             </button>
           </>
         )}
+
         <input
           ref={swapInput}
           type="file"
@@ -182,47 +308,81 @@ export function ScreensTab({
         <div className="spacer" />
         {busy && <span className="hint">{busy}…</span>}
         <button className="primary" onClick={() => setShowUpload(true)}>
-          + Upload screenshot
+          + New screen
         </button>
       </div>
 
-      <div className="screens-editor">
+      <div className="unified-screens-body">
         {selected ? (
-          selected.overlay ? (
-            <OverlayEditor
-              key={selected.id}
-              screen={selected}
-              presets={presets}
-              summary={summary}
-              initialPreset={activePreset}
-              embedded
-              onChanged={() => reload().catch(() => {})}
-              previewLocale={previewLocale}
-              onPreviewLocale={onPreviewLocale}
-            />
+          variantHasOverlay ? (
+            <>
+              <div className="unified-overlay-pane">
+                <OverlayEditor
+                  key={`${selected.id}-${variantPresetId}`}
+                  screen={selected}
+                  presets={presets}
+                  summary={summary}
+                  initialPreset={variantPresetId}
+                  variantPresetId={variantPresetId}
+                  hideDevicePicker
+                  embedded
+                  onChanged={() => reload().catch(() => {})}
+                  previewLocale={previewLocale}
+                  onPreviewLocale={onPreviewLocale}
+                />
+              </div>
+              <div className="unified-compose-pane">
+                <CompositionPanel
+                  screen={selected}
+                  config={config}
+                  summary={summary}
+                  presets={presets}
+                  variantPresetId={variantPresetId}
+                  previewLocale={previewLocale}
+                  onPreviewLocale={onPreviewLocale}
+                  onChanged={() => reload().catch(() => {})}
+                  hasOverlay={variantHasOverlay}
+                />
+              </div>
+            </>
           ) : (
-            <div className="empty-state">
-              <h2>{selected.name} has no screenshot yet</h2>
-              <p>
-                This screen was created without an image (e.g. duplicated for a
-                new device). Upload its screenshot to detect text and localize.
-              </p>
-              <button
-                className="primary"
-                disabled={!!busy}
-                onClick={() => {
-                  reocrRef.current = true;
-                  swapInput.current?.click();
-                }}
-              >
-                {busy ? `${busy}…` : "Upload screenshot"}
-              </button>
+            <div className="unified-empty-split">
+              <div className="empty-state">
+                <h2>{presetLabel(variantPresetId)} needs a screenshot</h2>
+                <p>
+                  This device variant has composition settings but no image yet.
+                  Upload a screenshot for this device size.
+                </p>
+                <button
+                  className="primary"
+                  disabled={!!busy}
+                  onClick={() => {
+                    reocrRef.current = true;
+                    swapInput.current?.click();
+                  }}
+                >
+                  {busy ? `${busy}…` : "Upload screenshot"}
+                </button>
+              </div>
+              <div className="unified-compose-pane solo">
+                <CompositionPanel
+                  screen={selected}
+                  config={config}
+                  summary={summary}
+                  presets={presets}
+                  variantPresetId={variantPresetId}
+                  previewLocale={previewLocale}
+                  onPreviewLocale={onPreviewLocale}
+                  onChanged={() => reload().catch(() => {})}
+                  hasOverlay={false}
+                />
+              </div>
             </div>
           )
         ) : (
           <div className="empty-state">
             <h2>No screens yet</h2>
-            <p>Upload a screenshot to detect its text and start localizing.</p>
+            <p>Upload a screenshot to detect text and start localizing.</p>
             <button className="primary" onClick={() => setShowUpload(true)}>
               Upload screenshot
             </button>
@@ -233,7 +393,7 @@ export function ScreensTab({
       {showUpload && (
         <OverlayUploadModal
           summary={summary}
-          presets={presets}
+          presets={presets.filter((p) => config.presetIds.includes(p.id))}
           busy={busy === "Analyzing screenshot"}
           onClose={() => setShowUpload(false)}
           onCreate={create}

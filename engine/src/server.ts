@@ -6,7 +6,7 @@ import { store, cellId } from "./store.js";
 import { readProject } from "./projectReader/index.js";
 import { PRESETS, getPreset } from "./capture/presets.js";
 import { captureEngine, captureScreenLocale } from "./capture/capture.js";
-import { composeCell } from "./compositor/compositor.js";
+import { composeCell, effectiveComposition } from "./compositor/compositor.js";
 import { renderOverlayHtml, fontFaces } from "./overlay/render.js";
 import {
   createOverlayScreen,
@@ -16,7 +16,13 @@ import {
   sampleSlotColors,
   replaceOverlaySource,
   duplicateScreen,
+  addScreenVariant,
+  removeScreenVariant,
 } from "./overlay/index.js";
+import {
+  primaryPresetId,
+  setVariantComposition,
+} from "./screens/variants.js";
 import { localizeKey } from "./strings/localize.js";
 import { saveCredentials, loadCredentials } from "./asc/credentials.js";
 import {
@@ -92,8 +98,15 @@ export function createServer() {
   app.put(
     "/api/project/settings",
     asyncRoute(async (req, res) => {
-      const { baseLocale } = req.body as { baseLocale?: string };
+      const { baseLocale, presetIds } = req.body as {
+        baseLocale?: string;
+        presetIds?: string[];
+      };
       if (baseLocale) store.setBaseLocale(baseLocale);
+      if (Array.isArray(presetIds)) {
+        const valid = presetIds.filter((id) => PRESETS.some((p) => p.id === id));
+        if (valid.length) store.setPresetIds(valid);
+      }
       res.json({ config: store.getConfig(), data: summarize() });
     }),
   );
@@ -263,7 +276,8 @@ export function createServer() {
   app.post(
     "/api/overlay/screens/:id/plate",
     asyncRoute(async (req, res) => {
-      const screen = await rebuildPlate(req.params.id);
+      const { presetId } = req.body as { presetId?: string };
+      const screen = await rebuildPlate(req.params.id, presetId);
       res.json({ screen });
     }),
   );
@@ -271,14 +285,16 @@ export function createServer() {
   app.post(
     "/api/overlay/screens/:id/source",
     asyncRoute(async (req, res) => {
-      const { imageDataUrl, reocr } = req.body as {
+      const { imageDataUrl, reocr, presetId } = req.body as {
         imageDataUrl: string;
         reocr?: boolean;
+        presetId?: string;
       };
       const screen = await replaceOverlaySource(
         req.params.id,
         imageDataUrl,
         Boolean(reocr),
+        presetId,
       );
       res.json({ screen });
     }),
@@ -290,10 +306,15 @@ export function createServer() {
     asyncRoute(async (req, res) => {
       const screen = store.getScreen(req.params.id);
       if (!screen) throw new Error("Unknown screen");
-      screen.composition = req.body.composition;
-      screen.updatedAt = new Date().toISOString();
-      store.upsertScreen(screen);
-      res.json({ screen });
+      const { composition, presetId } = req.body as {
+        composition: import("./types.js").ScreenComposition;
+        presetId?: string;
+      };
+      const pid = presetId ?? primaryPresetId(screen);
+      const next = setVariantComposition(screen, pid, composition);
+      next.updatedAt = new Date().toISOString();
+      store.upsertScreen(next);
+      res.json({ screen: store.getScreen(req.params.id) });
     }),
   );
 
@@ -325,15 +346,37 @@ export function createServer() {
     }),
   );
 
-  // Clone a screen's theming into a new screen for another device class.
+  // Add a device variant to an existing screen (composition copied, no overlay).
+  app.post(
+    "/api/screens/:id/variants",
+    asyncRoute(async (req, res) => {
+      const { presetId, copyFromPresetId } = req.body as {
+        presetId: string;
+        copyFromPresetId?: string;
+      };
+      if (!presetId) throw new Error("presetId is required");
+      const screen = addScreenVariant(req.params.id, {
+        presetId,
+        copyFromPresetId,
+      });
+      res.json({ screen, config: store.getConfig() });
+    }),
+  );
+
+  app.delete(
+    "/api/screens/:id/variants/:presetId",
+    asyncRoute(async (req, res) => {
+      const screen = removeScreenVariant(req.params.id, req.params.presetId);
+      res.json({ screen, config: store.getConfig() });
+    }),
+  );
+
+  // @deprecated — use POST /variants instead.
   app.post(
     "/api/screens/:id/duplicate",
     asyncRoute(async (req, res) => {
-      const { presetIds, name } = req.body as {
-        presetIds?: string[];
-        name?: string;
-      };
-      const screen = duplicateScreen(req.params.id, { presetIds, name });
+      const { presetIds } = req.body as { presetIds?: string[]; name?: string };
+      const screen = duplicateScreen(req.params.id, { presetIds });
       res.json({ screen, config: store.getConfig() });
     }),
   );
@@ -343,40 +386,41 @@ export function createServer() {
     asyncRoute(async (req, res) => {
       const screen = store.getScreen(req.params.id);
       if (!screen) throw new Error("Unknown screen");
-      const { text, key } = req.body as { text: string; key?: string };
+      const { text, key, presetId } = req.body as {
+        text: string;
+        key?: string;
+        presetId?: string;
+      };
+      const pid = presetId ?? primaryPresetId(screen);
       const headlineKey =
         key?.trim() || `appstore.${screen.id.replace(/[^\w.]/g, "_")}.headline`;
       store.addString(headlineKey, text ?? "", "App Store screenshot headline");
-      screen.composition = {
-        ...(screen.composition ?? {
-          mode: "device",
-          background: store.getConfig().compositor.background,
-          headlineColor: store.getConfig().compositor.headlineColor,
-          headlineFont: store.getConfig().compositor.headlineFont,
-          headlineHeightFraction:
-            store.getConfig().compositor.headlineHeightFraction,
-        }),
+      const comp = effectiveComposition(screen, pid);
+      const next = setVariantComposition(screen, pid, {
+        ...comp,
         headlineKey,
-      };
-      screen.updatedAt = new Date().toISOString();
-      store.upsertScreen(screen);
-      res.json({ screen, key: headlineKey });
+      });
+      next.updatedAt = new Date().toISOString();
+      store.upsertScreen(next);
+      res.json({ screen: store.getScreen(req.params.id), key: headlineKey });
     }),
   );
 
   app.post(
     "/api/overlay/screens/:id/sample",
     asyncRoute(async (req, res) => {
-      const { box } = req.body as {
+      const { box, presetId } = req.body as {
         box: { x: number; y: number; w: number; h: number };
+        presetId?: string;
       };
-      res.json(await sampleSlotColors(req.params.id, box));
+      res.json(await sampleSlotColors(req.params.id, box, presetId));
     }),
   );
 
   const sendOverlayImage = (which: "source" | "plate") =>
     asyncRoute(async (req, res) => {
-      const abs = overlayImagePath(req.params.id, which);
+      const presetId = req.query.preset as string | undefined;
+      const abs = overlayImagePath(req.params.id, which, presetId);
       if (!abs) {
         res.status(404).end();
         return;
@@ -592,9 +636,13 @@ export function createServer() {
       const screen = store.getScreen(req.params.screenId);
       if (!screen) throw new Error("Unknown screen");
       const locale = (req.query.locale as string) || store.getConfig().baseLocale;
-      const presetId = (req.query.preset as string) || screen.presetIds[0];
+      const presetId =
+        (req.query.preset as string) || primaryPresetId(screen);
       const preset = getPreset(presetId);
-      if (!screen.overlay) throw new Error("Screen has no source screenshot");
+      const { getOverlay } = await import("./screens/variants.js");
+      if (!getOverlay(screen, presetId)) {
+        throw new Error("Screen has no source screenshot for this device");
+      }
       res.setHeader("content-type", "text/html");
       res.send(renderOverlayHtml(screen, locale, preset));
     }),

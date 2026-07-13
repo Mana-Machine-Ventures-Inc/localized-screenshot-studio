@@ -120,6 +120,8 @@ export function StringsTab({
   // unreliable in the Tauri webview, so confirm inline instead).
   const [armRetrans, setArmRetrans] = useState(false);
   const retransTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [armDeleteKey, setArmDeleteKey] = useState<string | null>(null);
+  const deleteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const armRetranslate = () => {
     setArmRetrans(true);
     if (retransTimer.current) clearTimeout(retransTimer.current);
@@ -159,16 +161,27 @@ export function StringsTab({
     }
   };
 
+  const armDeleteOnce = (key: string) => {
+    setArmDeleteKey(key);
+    if (deleteTimer.current) clearTimeout(deleteTimer.current);
+    deleteTimer.current = setTimeout(() => setArmDeleteKey(null), 4000);
+  };
+
   const removeString = async (key: string) => {
-    if (!window.confirm(`Delete “${key}” from the studio?`)) return;
-    await api.deleteString(key);
-    setResults((p) => {
-      const next = { ...p };
-      delete next[key];
-      return next;
-    });
-    await load();
-    onChanged();
+    setBusy(true);
+    try {
+      await api.deleteString(key);
+      setResults((p) => {
+        const next = { ...p };
+        delete next[key];
+        return next;
+      });
+      setArmDeleteKey(null);
+      await load();
+      onChanged();
+    } finally {
+      setBusy(false);
+    }
   };
 
   const localizeRow = async (key: string, targets?: string[]) => {
@@ -490,11 +503,22 @@ export function StringsTab({
                     )}
                     {s.edited && <span className="slot-badge">edited</span>}
                     <button
-                      className="mini icon-btn"
-                      title="Delete string"
-                      onClick={() => void removeString(s.key)}
+                      className={`mini icon-btn${armDeleteKey === s.key ? " danger" : ""}`}
+                      title={
+                        armDeleteKey === s.key
+                          ? `Click again to delete “${s.key}”`
+                          : "Delete string"
+                      }
+                      disabled={!!bulk || busy}
+                      onClick={() => {
+                        if (armDeleteKey === s.key) {
+                          void removeString(s.key);
+                        } else {
+                          armDeleteOnce(s.key);
+                        }
+                      }}
                     >
-                      ✕
+                      {armDeleteKey === s.key ? "?" : "✕"}
                     </button>
                   </div>
                 </div>

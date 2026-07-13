@@ -1,25 +1,43 @@
 import { useState } from "react";
-import type { ProjectConfig, ProjectSummary } from "../types";
+import type {
+  AppStoreMetadataConfig,
+  DevicePreset,
+  PlatformMetadata,
+  ProjectConfig,
+  ProjectSummary,
+  StorePlatform,
+} from "../types";
 
 interface Props {
   open: boolean;
   config?: ProjectConfig;
   summary?: ProjectSummary | null;
+  presets: DevicePreset[];
   busy: string | null;
   hasCreds: boolean;
   onOpenProject: (path: string) => void;
   onSetBaseLocale: (locale: string) => void;
+  onSetDevices: (presetIds: string[]) => void;
+  onSetMetadata: (input: AppStoreMetadataConfig) => void;
   onEditCredentials: () => void;
 }
+
+const PLATFORMS: { id: StorePlatform; label: string }[] = [
+  { id: "ios", label: "iOS / iPadOS" },
+  { id: "macos", label: "macOS" },
+];
 
 export function ProjectTab({
   open,
   config,
   summary,
+  presets,
   busy,
   hasCreds,
   onOpenProject,
   onSetBaseLocale,
+  onSetDevices,
+  onSetMetadata,
   onEditCredentials,
 }: Props) {
   const [path, setPath] = useState(config?.projectPath ?? "");
@@ -52,9 +70,30 @@ export function ProjectTab({
   }
 
   const locales = summary?.locales ?? [config.baseLocale];
+  const metadata = config.metadata ?? {};
+  const keys = summary?.keys ?? [];
+  const selectedDevices = config.presetIds ?? [];
+
+  const toggleDevice = (id: string) => {
+    const next = selectedDevices.includes(id)
+      ? selectedDevices.filter((d) => d !== id)
+      : [...selectedDevices, id];
+    if (!next.length) return; // keep at least one device targeted
+    onSetDevices(next);
+  };
+
+  const updateField = (
+    platform: StorePlatform,
+    field: keyof PlatformMetadata,
+    value: string,
+  ) => {
+    const cur = metadata[platform] ?? {};
+    onSetMetadata({ [platform]: { ...cur, [field]: value || undefined } });
+  };
 
   return (
-    <div className="tab-content cols">
+    <div className="tab-content project-tab">
+      <div className="project-grid">
       <div className="card">
         <div className="section-title" style={{ marginTop: 0 }}>
           Linked project
@@ -136,6 +175,77 @@ export function ProjectTab({
 
       <div className="card">
         <div className="section-title" style={{ marginTop: 0 }}>
+          Devices
+        </div>
+        <p className="hint">
+          The device sizes this project ships screenshots for. New screens and
+          the generation matrix follow this selection.
+        </p>
+        <div className="device-toggle-list">
+          {presets.map((p) => {
+            const on = selectedDevices.includes(p.id);
+            return (
+              <label
+                key={p.id}
+                className={`device-toggle${on ? " on" : ""}`}
+              >
+                <input
+                  type="checkbox"
+                  checked={on}
+                  disabled={!!busy}
+                  onChange={() => toggleDevice(p.id)}
+                />
+                <span className="grow">{p.label}</span>
+                <span className="hint">
+                  {p.pixelWidth}×{p.pixelHeight} · {p.orientation}
+                </span>
+              </label>
+            );
+          })}
+          {!presets.length && <p className="hint">No presets available.</p>}
+        </div>
+      </div>
+
+      <div className="card project-meta">
+        <div className="section-title" style={{ marginTop: 0 }}>
+          App Store metadata mapping
+        </div>
+        <p className="hint">
+          Pick which localized strings power the App Store <b>description</b> and{" "}
+          <b>what's new</b> text, per platform. Values are resolved per locale
+          (falling back to the source language). What's new falls back to any
+          release notes found in the project.
+        </p>
+        <div className="meta-map">
+          {PLATFORMS.map((p) => {
+            const m = metadata[p.id] ?? {};
+            return (
+              <div className="meta-platform" key={p.id}>
+                <div className="meta-platform-title">{p.label}</div>
+                <label className="meta-field">
+                  <span>Description</span>
+                  <KeySelect
+                    value={m.descriptionKey}
+                    keys={keys}
+                    onChange={(v) => updateField(p.id, "descriptionKey", v)}
+                  />
+                </label>
+                <label className="meta-field">
+                  <span>What's new</span>
+                  <KeySelect
+                    value={m.whatsNewKey}
+                    keys={keys}
+                    onChange={(v) => updateField(p.id, "whatsNewKey", v)}
+                  />
+                </label>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="section-title" style={{ marginTop: 0 }}>
           App Store Connect
         </div>
         <div className="kv">
@@ -164,6 +274,34 @@ export function ProjectTab({
           {hasCreds ? "Update credentials" : "Add credentials"}
         </button>
       </div>
+      </div>
     </div>
   );
+}
+
+function KeySelect({
+  value,
+  keys,
+  onChange,
+}: {
+  value?: string;
+  keys: { key: string; base: string }[];
+  onChange: (value: string) => void;
+}) {
+  return (
+    <select value={value ?? ""} onChange={(e) => onChange(e.target.value)}>
+      <option value="">— none —</option>
+      {keys.map((k) => (
+        <option key={k.key} value={k.key}>
+          {k.key}
+          {k.base ? ` — ${truncate(k.base)}` : ""}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function truncate(s: string, max = 40): string {
+  const flat = s.replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat;
 }

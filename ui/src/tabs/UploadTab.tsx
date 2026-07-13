@@ -1,10 +1,9 @@
 import { useState } from "react";
 import { api } from "../api";
+import { getScreenPresetIds } from "../screens/variants";
 import { Dashboard } from "../components/Dashboard";
 import type {
-  AppStoreMetadataConfig,
   DevicePreset,
-  PlatformMetadata,
   ProjectConfig,
   ProjectSummary,
   StorePlatform,
@@ -19,11 +18,11 @@ interface Props {
   busy: string | null;
   job: UploadJob | null;
   onUpload: (opts: Parameters<typeof api.upload>[0], label: string) => void;
-  onSetMetadata: (input: AppStoreMetadataConfig) => void;
   onRetryFailed: () => void;
   onCancel: () => void;
   onCloseJob: () => void;
   onEditCredentials: () => void;
+  onGoToSettings: () => void;
 }
 
 const PLATFORMS: { id: StorePlatform; label: string }[] = [
@@ -39,24 +38,21 @@ export function UploadTab({
   busy,
   job,
   onUpload,
-  onSetMetadata,
   onRetryFailed,
   onCancel,
   onCloseJob,
   onEditCredentials,
+  onGoToSettings,
 }: Props) {
   const hasScreens = config.screens.length > 0;
   const metadata = config.metadata ?? {};
-  const keys = summary.keys;
   const running = (!!job && !job.done) || !!busy;
   const dryRun = !hasCreds;
 
   // Device presets actually used by the project's screens.
   const usedPresetIds = Array.from(
     new Set(
-      config.screens.flatMap((s) =>
-        s.presetIds.length ? s.presetIds : config.presetIds,
-      ),
+      config.screens.flatMap((s) => getScreenPresetIds(s, config.presetIds)),
     ),
   );
   const presetLabel = (id: string) =>
@@ -164,15 +160,6 @@ export function UploadTab({
       return `Uploading ${activeItem.locale} · ${dev}`;
     }
     return "Starting…";
-  };
-
-  const updateField = (
-    platform: StorePlatform,
-    field: keyof PlatformMetadata,
-    value: string,
-  ) => {
-    const cur = metadata[platform] ?? {};
-    onSetMetadata({ [platform]: { ...cur, [field]: value || undefined } });
   };
 
   return (
@@ -396,54 +383,22 @@ export function UploadTab({
 
       <div className="card" style={{ marginTop: 16 }}>
         <div className="section-title" style={{ marginTop: 0 }}>
-          Metadata mapping
-        </div>
-        <p className="hint">
-          Pick which localized strings power the App Store{" "}
-          <b>description</b> and <b>what's new</b> text, per platform. Values are
-          resolved per locale (falling back to the source language). What's new
-          falls back to any release notes found in the project.
-        </p>
-        <div className="meta-map">
-          {PLATFORMS.map((p) => {
-            const m = metadata[p.id] ?? {};
-            return (
-              <div className="meta-platform" key={p.id}>
-                <div className="meta-platform-title">{p.label}</div>
-                <label className="meta-field">
-                  <span>Description</span>
-                  <KeySelect
-                    value={m.descriptionKey}
-                    keys={keys}
-                    onChange={(v) => updateField(p.id, "descriptionKey", v)}
-                  />
-                </label>
-                <label className="meta-field">
-                  <span>What's new</span>
-                  <KeySelect
-                    value={m.whatsNewKey}
-                    keys={keys}
-                    onChange={(v) => updateField(p.id, "whatsNewKey", v)}
-                  />
-                </label>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      <div className="card" style={{ marginTop: 16 }}>
-        <div className="section-title" style={{ marginTop: 0 }}>
           Metadata by language
         </div>
         <p className="hint">
           Upload description + What's New for a single language and watch the
           full request/response in the dashboard below. Use this to debug a
-          value that "won't take".
+          value that "won't take". The string mapping lives in{" "}
+          <button className="linklike" onClick={onGoToSettings}>
+            Project → metadata mapping
+          </button>
+          .
         </p>
         {!hasMetaMapping ? (
           <div className="empty-state">
-            <p>Map a Description or What's New string above first.</p>
+            <p>
+              Map a Description or What's New string in the Project tab first.
+            </p>
           </div>
         ) : (
           <div className="lang-upload-list">
@@ -493,31 +448,4 @@ export function UploadTab({
       </div>
     </div>
   );
-}
-
-function KeySelect({
-  value,
-  keys,
-  onChange,
-}: {
-  value?: string;
-  keys: { key: string; base: string }[];
-  onChange: (value: string) => void;
-}) {
-  return (
-    <select value={value ?? ""} onChange={(e) => onChange(e.target.value)}>
-      <option value="">— none —</option>
-      {keys.map((k) => (
-        <option key={k.key} value={k.key}>
-          {k.key}
-          {k.base ? ` — ${truncate(k.base)}` : ""}
-        </option>
-      ))}
-    </select>
-  );
-}
-
-function truncate(s: string, max = 40): string {
-  const flat = s.replace(/\s+/g, " ").trim();
-  return flat.length > max ? `${flat.slice(0, max)}…` : flat;
 }

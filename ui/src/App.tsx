@@ -7,18 +7,18 @@ import type {
   UploadJobItem,
 } from "./types";
 import { CredentialsModal } from "./components/CredentialsModal";
+import { OverviewTab } from "./tabs/OverviewTab";
 import { ProjectTab } from "./tabs/ProjectTab";
 import { StringsTab } from "./tabs/StringsTab";
 import { ScreensTab } from "./tabs/ScreensTab";
-import { CompositionsTab } from "./tabs/CompositionsTab";
 import { GenerateTab } from "./tabs/GenerateTab";
 import { UploadTab } from "./tabs/UploadTab";
 
 const TABS = [
+  "Overview",
   "Project",
   "Strings",
   "Screens",
-  "Compositions",
   "Generate",
   "Upload",
 ] as const;
@@ -28,13 +28,12 @@ export function App() {
   const [project, setProject] = useState<ProjectResponse | null>(null);
   const [summary, setSummary] = useState<ProjectSummary | null>(null);
   const [presets, setPresets] = useState<DevicePreset[]>([]);
-  const [activePreset, setActivePreset] = useState<string>("");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string>();
   const [hasCreds, setHasCreds] = useState(false);
   const [showCreds, setShowCreds] = useState(false);
   const [job, setJob] = useState<UploadJob | null>(null);
-  const [tab, setTab] = useState<Tab>("Project");
+  const [tab, setTab] = useState<Tab>("Overview");
   const [tick, setTick] = useState(0);
   const [connectFailed, setConnectFailed] = useState(false);
   const [connectTick, setConnectTick] = useState(0);
@@ -72,6 +71,13 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config]);
 
+  // With no project open, the only usable tab is Project — never strand the
+  // user on a blank Overview/Strings/etc.
+  useEffect(() => {
+    if (project && !project.open && tab !== "Project") setTab("Project");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project?.open]);
+
   // Default the shared preview language to the project's base locale once known.
   useEffect(() => {
     if (!previewLocale && summary?.locales?.length) {
@@ -84,9 +90,6 @@ export function App() {
     const p = await api.getProject();
     setProject(p);
     if (p.open && p.data) setSummary(p.data);
-    if (p.open && p.config && !activePreset) {
-      setActivePreset(p.config.presetIds[0] ?? "iphone-6-9");
-    }
     setTick((t) => t + 1);
   }
 
@@ -107,9 +110,9 @@ export function App() {
           .ascStatus()
           .then((s) => setHasCreds(s.hasCredentials))
           .catch(() => {});
-        // jump to the working tabs once a project is open
+        // land on the Overview dashboard once a project is open
         setProject((p) => {
-          if (p?.open) setTab("Screens");
+          if (p?.open) setTab("Overview");
           return p;
         });
       } catch {
@@ -143,12 +146,18 @@ export function App() {
     run("Opening project", async () => {
       await api.openProject(path);
       await reload();
-      setTab("Screens");
+      setTab("Overview");
     });
 
   const setBaseLocale = (locale: string) =>
     run("Updating settings", async () => {
       await api.setSettings({ baseLocale: locale });
+      await reload();
+    });
+
+  const setProjectDevices = (presetIds: string[]) =>
+    run("Updating devices", async () => {
+      await api.setSettings({ presetIds });
       await reload();
     });
 
@@ -298,15 +307,30 @@ export function App() {
       {error && <div className="banner error-banner">{error}</div>}
 
       <div className="tab-host">
+        {tab === "Overview" && open && config && summary && (
+          <OverviewTab
+            config={config}
+            summary={summary}
+            presets={presets}
+            hasCreds={hasCreds}
+            reloadToken={tick}
+            onNavigate={(t) => setTab(t as Tab)}
+            onEditCredentials={() => setShowCreds(true)}
+          />
+        )}
+
         {tab === "Project" && (
           <ProjectTab
             open={open}
             config={config}
             summary={summary}
+            presets={presets}
             busy={busy}
             hasCreds={hasCreds}
             onOpenProject={openProject}
             onSetBaseLocale={setBaseLocale}
+            onSetDevices={setProjectDevices}
+            onSetMetadata={setMetadata}
             onEditCredentials={() => setShowCreds(true)}
           />
         )}
@@ -325,21 +349,6 @@ export function App() {
             config={config}
             summary={summary}
             presets={presets}
-            activePreset={activePreset}
-            reload={reload}
-            selectedId={selectedScreenId}
-            onSelect={setSelectedScreenId}
-            previewLocale={previewLocale}
-            onPreviewLocale={setPreviewLocale}
-          />
-        )}
-
-        {tab === "Compositions" && open && config && summary && (
-          <CompositionsTab
-            config={config}
-            summary={summary}
-            presets={presets}
-            activePreset={activePreset}
             reload={reload}
             selectedId={selectedScreenId}
             onSelect={setSelectedScreenId}
@@ -366,11 +375,11 @@ export function App() {
             busy={busy}
             job={job}
             onUpload={startUpload}
-            onSetMetadata={setMetadata}
             onRetryFailed={retryFailed}
             onCancel={cancelUpload}
             onCloseJob={closeJob}
             onEditCredentials={() => setShowCreds(true)}
+            onGoToSettings={() => setTab("Project")}
           />
         )}
       </div>

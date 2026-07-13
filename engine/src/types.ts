@@ -95,6 +95,12 @@ export interface DevicePreset {
 /** How a screen produces its capture PNG. */
 export type ScreenKind = "overlay";
 
+/** Per-device overlay + composition within a single logical screen slot. */
+export interface ScreenVariant {
+  overlay?: OverlayScreenData;
+  composition?: ScreenComposition;
+}
+
 export interface ScreenTemplate {
   id: string;
   name: string;
@@ -102,13 +108,15 @@ export interface ScreenTemplate {
   kind?: ScreenKind;
   /** string keys this screen references (derived from its text slots). */
   stringKeys: string[];
-  /** overlay data (source screenshot, clean plate, and text slots). */
+  /** Per-device-preset overlay + composition. Key = presetId. */
+  variants?: Record<string, ScreenVariant>;
+  /** @deprecated legacy — migrated into variants on load. */
   overlay?: OverlayScreenData;
   /** marketing headline keyed by locale, shown in the promo frame. */
   headline: Record<string, string>;
-  /** per-screen composition (frame/background/headline). */
+  /** @deprecated legacy — migrated into variants on load. */
   composition?: ScreenComposition;
-  /** device presets this screen targets. */
+  /** device presets this screen targets (derived from variants keys). */
   presetIds: string[];
   createdAt: string;
   updatedAt: string;

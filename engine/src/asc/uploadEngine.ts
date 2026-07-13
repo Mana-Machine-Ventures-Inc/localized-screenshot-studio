@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { store } from "../store.js";
+import { getScreenPresetIds } from "../screens/variants.js";
 import { getPreset } from "../capture/presets.js";
 import { createAscToken } from "./jwt.js";
 import { loadCredentials } from "./credentials.js";
@@ -78,7 +79,7 @@ function metadataPlatforms(): StorePlatform[] {
 
   const inferred = new Set<StorePlatform>();
   for (const screen of cfg.screens) {
-    const presetIds = screen.presetIds.length ? screen.presetIds : cfg.presetIds;
+    const presetIds = getScreenPresetIds(screen, cfg.presetIds);
     for (const pid of presetIds) inferred.add(storePlatformForPreset(pid));
   }
   return inferred.size ? [...inferred] : ["ios"];
