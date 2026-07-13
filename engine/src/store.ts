@@ -256,6 +256,21 @@ class Store {
     this.save();
   }
 
+  /**
+   * Pin (or clear) the App Store Connect marketing version uploads target.
+   * Independent of credentials — only updates project.json.
+   */
+  setAscVersionString(versionString?: string): ProjectConfig["asc"] {
+    const cfg = this.getConfig();
+    const trimmed = versionString?.trim() || undefined;
+    cfg.asc = {
+      ...(cfg.asc ?? { hasKey: false }),
+      versionString: trimmed,
+    };
+    this.save();
+    return cfg.asc;
+  }
+
   setBaseLocale(locale: string): void {
     const cfg = this.getConfig();
     cfg.baseLocale = locale;

@@ -539,6 +539,16 @@ export function createServer() {
     }),
   );
 
+  // Pin / clear the ASC marketing version uploads attach to (no credential change).
+  app.put(
+    "/api/asc/version",
+    asyncRoute(async (req, res) => {
+      const { versionString } = req.body as { versionString?: string };
+      const ref = store.setAscVersionString(versionString);
+      res.json({ ok: true, ref });
+    }),
+  );
+
   app.post(
     "/api/upload",
     asyncRoute(async (req, res) => {

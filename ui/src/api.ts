@@ -275,6 +275,10 @@ export const api = {
     privateKey: string;
     versionString?: string;
   }) => req<{ ok: boolean }>("POST", "/api/asc/credentials", input),
+  setAscVersion: (versionString?: string) =>
+    req<{ ok: boolean; ref: ProjectConfig["asc"] }>("PUT", "/api/asc/version", {
+      versionString,
+    }),
   upload: (opts: {
     kind: "screenshots" | "metadata" | "both";
     dryRun?: boolean;

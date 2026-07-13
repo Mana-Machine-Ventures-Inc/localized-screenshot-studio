@@ -19,11 +19,16 @@ export function saveCredentials(input: SaveCredentialsInput): void {
   fs.writeFileSync(credentialFile(input.appId), input.privateKey, {
     mode: 0o600,
   });
+  const existing = store.isOpen() ? store.getConfig().asc : undefined;
   store.setAscRef({
     issuerId: input.issuerId,
     keyId: input.keyId,
     appId: input.appId,
-    versionString: input.versionString,
+    // Keep the separately-edited target version unless the caller overrides it.
+    versionString:
+      input.versionString !== undefined
+        ? input.versionString || undefined
+        : existing?.versionString,
     hasKey: true,
   });
 }

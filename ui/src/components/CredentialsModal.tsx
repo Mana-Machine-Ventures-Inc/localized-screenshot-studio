@@ -6,7 +6,6 @@ interface Props {
     issuerId: string;
     keyId: string;
     appId: string;
-    versionString?: string;
     privateKey: string;
   }) => void;
 }
@@ -15,7 +14,6 @@ export function CredentialsModal({ onClose, onSave }: Props) {
   const [issuerId, setIssuerId] = useState("");
   const [keyId, setKeyId] = useState("");
   const [appId, setAppId] = useState("");
-  const [versionString, setVersionString] = useState("");
   const [privateKey, setPrivateKey] = useState("");
 
   const canSave = issuerId && keyId && appId && privateKey;
@@ -41,14 +39,10 @@ export function CredentialsModal({ onClose, onSave }: Props) {
           <label>App ID (Apple ID, numeric)</label>
           <input value={appId} onChange={(e) => setAppId(e.target.value)} />
         </div>
-        <div className="field">
-          <label>Version string (optional)</label>
-          <input
-            value={versionString}
-            onChange={(e) => setVersionString(e.target.value)}
-            placeholder="e.g. 2.4.0 (blank = first editable version)"
-          />
-        </div>
+        <p className="hint" style={{ marginTop: 0 }}>
+          ASC target version is set separately on the Project or Upload tab —
+          you don’t need to re-enter credentials to change it.
+        </p>
         <div className="field">
           <label>Private key (.p8 contents)</label>
           <textarea
@@ -71,7 +65,6 @@ export function CredentialsModal({ onClose, onSave }: Props) {
                 issuerId,
                 keyId,
                 appId,
-                versionString: versionString || undefined,
                 privateKey,
               })
             }

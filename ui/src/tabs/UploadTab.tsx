@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../api";
 import { getScreenPresetIds } from "../screens/variants";
 import { Dashboard } from "../components/Dashboard";
@@ -23,6 +23,7 @@ interface Props {
   onCloseJob: () => void;
   onEditCredentials: () => void;
   onGoToSettings: () => void;
+  onSetAscVersion: (versionString?: string) => void;
 }
 
 const PLATFORMS: { id: StorePlatform; label: string }[] = [
@@ -43,11 +44,20 @@ export function UploadTab({
   onCloseJob,
   onEditCredentials,
   onGoToSettings,
+  onSetAscVersion,
 }: Props) {
   const hasScreens = config.screens.length > 0;
   const metadata = config.metadata ?? {};
   const running = (!!job && !job.done) || !!busy;
   const dryRun = !hasCreds;
+
+  const [ascVersionDraft, setAscVersionDraft] = useState(
+    config.asc?.versionString ?? "",
+  );
+
+  useEffect(() => {
+    setAscVersionDraft(config.asc?.versionString ?? "");
+  }, [config.asc?.versionString]);
 
   // Device presets actually used by the project's screens.
   const usedPresetIds = Array.from(
@@ -209,9 +219,26 @@ export function UploadTab({
             <span>Build number</span>
             <b>{summary.buildNumber ?? "—"}</b>
           </div>
-          <div className="kv">
-            <span>ASC target version</span>
-            <b>{config.asc?.versionString ?? "auto (editable)"}</b>
+          <div className="field" style={{ marginTop: 10 }}>
+            <label>ASC target version</label>
+            <div className="row" style={{ gap: 8 }}>
+              <input
+                value={ascVersionDraft}
+                onChange={(e) => setAscVersionDraft(e.target.value)}
+                placeholder="e.g. 3.0.7 (blank = auto)"
+                style={{ flex: 1 }}
+                disabled={running}
+              />
+              <button
+                className="ghost"
+                disabled={running || !!busy}
+                onClick={() =>
+                  onSetAscVersion(ascVersionDraft.trim() || undefined)
+                }
+              >
+                Save
+              </button>
+            </div>
           </div>
           <div className="kv">
             <span>Uploaded for this build</span>

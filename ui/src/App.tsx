@@ -167,6 +167,12 @@ export function App() {
       await reload();
     });
 
+  const setAscVersion = (versionString?: string) =>
+    run("Updating ASC version", async () => {
+      await api.setAscVersion(versionString);
+      await reload();
+    });
+
   const saveCreds = (input: Parameters<typeof api.saveCredentials>[0]) =>
     run("Saving credentials", async () => {
       await api.saveCredentials(input);
@@ -331,6 +337,7 @@ export function App() {
             onSetBaseLocale={setBaseLocale}
             onSetDevices={setProjectDevices}
             onSetMetadata={setMetadata}
+            onSetAscVersion={setAscVersion}
             onEditCredentials={() => setShowCreds(true)}
           />
         )}
@@ -380,6 +387,7 @@ export function App() {
             onCloseJob={closeJob}
             onEditCredentials={() => setShowCreds(true)}
             onGoToSettings={() => setTab("Project")}
+            onSetAscVersion={setAscVersion}
           />
         )}
       </div>

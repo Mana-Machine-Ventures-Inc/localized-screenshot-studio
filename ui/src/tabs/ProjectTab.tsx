@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type {
   AppStoreMetadataConfig,
   DevicePreset,
@@ -19,6 +19,7 @@ interface Props {
   onSetBaseLocale: (locale: string) => void;
   onSetDevices: (presetIds: string[]) => void;
   onSetMetadata: (input: AppStoreMetadataConfig) => void;
+  onSetAscVersion: (versionString?: string) => void;
   onEditCredentials: () => void;
 }
 
@@ -38,9 +39,17 @@ export function ProjectTab({
   onSetBaseLocale,
   onSetDevices,
   onSetMetadata,
+  onSetAscVersion,
   onEditCredentials,
 }: Props) {
   const [path, setPath] = useState(config?.projectPath ?? "");
+  const [ascVersionDraft, setAscVersionDraft] = useState(
+    config?.asc?.versionString ?? "",
+  );
+
+  useEffect(() => {
+    setAscVersionDraft(config?.asc?.versionString ?? "");
+  }, [config?.asc?.versionString]);
 
   if (!open || !config) {
     return (
@@ -260,12 +269,29 @@ export function ProjectTab({
             <b>{config.asc.appId}</b>
           </div>
         )}
-        {config.asc?.versionString && (
-          <div className="kv">
-            <span>Version</span>
-            <b>{config.asc.versionString}</b>
+        <div className="field" style={{ marginTop: 10 }}>
+          <label>ASC target version</label>
+          <div className="row" style={{ gap: 8 }}>
+            <input
+              value={ascVersionDraft}
+              onChange={(e) => setAscVersionDraft(e.target.value)}
+              placeholder="e.g. 3.0.7 (blank = auto)"
+              style={{ flex: 1 }}
+            />
+            <button
+              className="ghost"
+              disabled={!!busy}
+              onClick={() => onSetAscVersion(ascVersionDraft.trim() || undefined)}
+            >
+              Save
+            </button>
           </div>
-        )}
+          <p className="hint" style={{ margin: "6px 0 0" }}>
+            Marketing version in App Store Connect that uploads attach to.
+            Leave blank to use the latest editable version. Changing this does
+            not touch credentials.
+          </p>
+        </div>
         <button
           className="ghost"
           style={{ width: "100%", marginTop: 8 }}
