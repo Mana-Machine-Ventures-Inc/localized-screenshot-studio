@@ -75,16 +75,16 @@ export const PRESETS: DevicePreset[] = [
   },
   {
     id: "mac",
-    label: "Mac",
+    label: "Mac App Store",
     ascDisplayType: "APP_DESKTOP",
     pointWidth: 1440,
     pointHeight: 900,
-    scale: 2,
-    pixelWidth: 2880,
-    pixelHeight: 1800,
+    scale: 1,
+    pixelWidth: 1440,
+    pixelHeight: 900,
     platform: "macos",
     orientation: "landscape",
-    cornerRadius: 18,
+    cornerRadius: 0,
   },
 ];
 

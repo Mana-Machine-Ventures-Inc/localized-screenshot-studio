@@ -123,16 +123,18 @@ export interface CreateOverlayInput {
   sourceLocale?: string;
   imageDataUrl: string;
   presetId?: string;
+  /** When true, run OCR and create text slots. Default false. */
+  detectText?: boolean;
 }
 
 export interface OverlayResult {
   screen: ScreenTemplate;
-  ocrEngine: OcrResult["engine"];
+  ocrEngine: OcrResult["engine"] | "none";
   detectedCount: number;
   matchedCount: number;
 }
 
-/** Upload a screenshot, detect + match text, build a clean plate, save screen. */
+/** Upload a screenshot, optionally detect text, build a plate, save screen. */
 export async function createOverlayScreen(
   input: CreateOverlayInput,
 ): Promise<OverlayResult> {
@@ -140,6 +142,7 @@ export async function createOverlayScreen(
   const paths = store.getPaths();
   const cfg = store.getConfig();
   const sourceLocale = input.sourceLocale ?? cfg.baseLocale;
+  const runOcr = Boolean(input.detectText);
 
   const { buffer, ext } = decodeDataUrl(input.imageDataUrl);
   const id = uniqueScreenId(slugify(input.name));
@@ -158,8 +161,16 @@ export async function createOverlayScreen(
   fs.mkdirSync(paths.overlayDir, { recursive: true });
   fs.writeFileSync(sourceAbs, buffer);
 
-  const ocr = await detectText(sourceAbs);
-  const slots = await buildSlots(buffer, ocr, sourceLocale, W, H);
+  let slots: TextSlot[] = [];
+  let ocrEngine: OcrResult["engine"] | "none" = "none";
+  let detectedCount = 0;
+  if (runOcr) {
+    const ocr = await detectText(sourceAbs);
+    ocrEngine = ocr.engine;
+    detectedCount = ocr.lines.length;
+    slots = await buildSlots(buffer, ocr, sourceLocale, W, H);
+  }
+
   const plateAbs = path.join(paths.overlayDir, `${base}__plate.png`);
   await buildPlate(sourceAbs, slots, plateAbs);
 
@@ -185,13 +196,15 @@ export async function createOverlayScreen(
     updatedAt: now,
   };
   store.upsertScreen(screen);
+  // Creating a screen for a device (e.g. Mac) opts the project into that target.
+  store.ensurePresetId(preset.id);
   store.reconcileCells(store.getData()?.locales ?? [cfg.baseLocale]);
   screen = store.getScreen(id)!;
 
   return {
     screen,
-    ocrEngine: ocr.engine,
-    detectedCount: ocr.lines.length,
+    ocrEngine,
+    detectedCount,
     matchedCount: slots.filter((s) => s.linkedKey).length,
   };
 }
@@ -225,6 +238,7 @@ export function addScreenVariant(
   );
   next.updatedAt = new Date().toISOString();
   store.upsertScreen(next);
+  store.ensurePresetId(input.presetId);
   store.reconcileCells(
     store.getData()?.locales ?? [store.getConfig().baseLocale],
   );
@@ -276,13 +290,22 @@ export async function updateOverlayScreen(
 ): Promise<ScreenTemplate> {
   let screen = store.getScreen(screenId);
   if (!screen) throw new Error(`Unknown screen: ${screenId}`);
+
+  // Rename is screen-level and does not require a device overlay.
+  if (input.name?.trim() && !input.slots && !input.sourceLocale) {
+    screen.name = input.name.trim();
+    screen.updatedAt = new Date().toISOString();
+    store.upsertScreen(screen);
+    return store.getScreen(screenId)!;
+  }
+
   const presetId = input.presetId ?? primaryPresetId(screen);
   const overlay = getOverlay(screen, presetId);
   if (!overlay) {
     throw new Error(`Screen ${screenId} has no overlay for ${presetId}`);
   }
   const paths = store.getPaths();
-  if (input.name) screen.name = input.name;
+  if (input.name) screen.name = input.name.trim();
   if (input.sourceLocale) overlay.sourceLocale = input.sourceLocale;
 
   if (input.slots) {
@@ -359,9 +382,12 @@ export async function replaceOverlaySource(
   overlay.plateWidth = W;
   overlay.plateHeight = H;
 
-  if (!hadOverlay || reocr) {
+  // OCR only when explicitly requested — never the default for upload/swap.
+  if (reocr) {
     const ocr = await detectText(sourceAbs);
     overlay.slots = await buildSlots(buffer, ocr, sourceLocale, W, H);
+  } else if (!hadOverlay) {
+    overlay.slots = [];
   }
 
   const plateAbs = path.join(paths.dataDir, overlay.platePath);

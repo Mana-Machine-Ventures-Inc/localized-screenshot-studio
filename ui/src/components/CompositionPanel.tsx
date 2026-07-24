@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api, renderUrl, type ProjectFont } from "../api";
 import { FontPicker } from "./FontPicker";
 import { ColorPicker } from "./ColorPicker";
-import { getComposition } from "../screens/variants";
+import { getComposition, getOverlay } from "../screens/variants";
 import type {
   CompositorConfig,
   DevicePreset,
@@ -74,11 +74,25 @@ export function CompositionPanel({
   const compSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const typoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const deviceSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Accumulate patches across debounce so Size then Area don't wipe each other.
+  const pendingUniversal = useRef<Partial<CompositorConfig>>({});
+  const pendingDevice = useRef<{
+    headlineSizePct?: number;
+    headlineHeightFraction?: number;
+  }>({});
 
   useEffect(() => {
     setComp(getComposition(screen, variantPresetId) ?? defaultComp);
+  }, [screen.id, variantPresetId, defaultComp, screen]);
+
+  // Sync typography from the project when switching screens/variants, but skip
+  // while local slider edits are still pending save — otherwise a reload after
+  // Size would clobber an in-flight Area change (and vice versa).
+  useEffect(() => {
+    if (Object.keys(pendingUniversal.current).length) return;
+    if (Object.keys(pendingDevice.current).length) return;
     setTypo(config.compositor);
-  }, [screen.id, variantPresetId, screen, defaultComp, config.compositor]);
+  }, [screen.id, variantPresetId, config.compositor]);
 
   useEffect(() => {
     api
@@ -106,6 +120,26 @@ export function CompositionPanel({
     return () => ro.disconnect();
   }, []);
 
+  // Flush any pending typography saves if the panel unmounts mid-debounce.
+  useEffect(() => {
+    return () => {
+      if (typoSaveTimer.current) clearTimeout(typoSaveTimer.current);
+      if (deviceSaveTimer.current) clearTimeout(deviceSaveTimer.current);
+      const uni = pendingUniversal.current;
+      const dev = pendingDevice.current;
+      if (Object.keys(uni).length) {
+        pendingUniversal.current = {};
+        void api.setCompositor(uni).catch(() => {});
+      }
+      if (Object.keys(dev).length) {
+        pendingDevice.current = {};
+        const cls = presets.find((p) => p.id === variantPresetId)?.platform ?? "ios";
+        void api.setDeviceTypography(cls, dev).catch(() => {});
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const persistComp = (next: ScreenComposition) => {
     if (compSaveTimer.current) clearTimeout(compSaveTimer.current);
     compSaveTimer.current = setTimeout(() => {
@@ -129,9 +163,15 @@ export function CompositionPanel({
 
   const updateUniversal = (patch: Partial<CompositorConfig>) => {
     setTypo((prev) => ({ ...prev, ...patch }));
+    pendingUniversal.current = { ...pendingUniversal.current, ...patch };
     if (typoSaveTimer.current) clearTimeout(typoSaveTimer.current);
     typoSaveTimer.current = setTimeout(() => {
-      api.setCompositor(patch).catch(() => {});
+      const toSave = pendingUniversal.current;
+      pendingUniversal.current = {};
+      api
+        .setCompositor(toSave)
+        .then(() => onChanged())
+        .catch(() => {});
     }, 450);
   };
 
@@ -153,35 +193,31 @@ export function CompositionPanel({
         [deviceClass]: { ...prev.perDevice?.[deviceClass], ...patch },
       },
     }));
+    pendingDevice.current = { ...pendingDevice.current, ...patch };
     if (deviceSaveTimer.current) clearTimeout(deviceSaveTimer.current);
     deviceSaveTimer.current = setTimeout(() => {
-      api.setDeviceTypography(deviceClass, patch).catch(() => {});
+      const toSave = pendingDevice.current;
+      pendingDevice.current = {};
+      api
+        .setDeviceTypography(deviceClass, toSave)
+        .then(() => onChanged())
+        .catch(() => {});
     }, 450);
   };
 
-  const renderW = preset?.pointWidth ?? 393;
-  const renderH = preset?.pointHeight ?? 852;
-  const pxPerPoint = Math.min(wrap.w / renderW, wrap.h / renderH, 1);
-  const stageW = Math.max(0, renderW * pxPerPoint);
-  const stageH = Math.max(0, renderH * pxPerPoint);
-
-  const isDevice = comp.mode === "device";
-  const headlineAreaH = isDevice ? areaFraction * stageH : 0;
-  const bottomPad = isDevice ? 0.04 * stageH : 0;
-  const sidePad = 0.08 * stageW;
-  const availH = stageH - headlineAreaH - bottomPad;
-  const availW = stageW - sidePad * 2;
-  const fitScale = isDevice ? Math.min(availW / stageW, availH / stageH) : 1;
-  const screenW = stageW * fitScale;
-  const screenH = stageH * fitScale;
-  const bezel = isDevice ? Math.max(1, Math.round(stageW * 0.012)) : 0;
-  const outerW = screenW + bezel * 2;
-  const outerH = screenH + bezel * 2;
-  const deviceLeft = (stageW - outerW) / 2;
-  const deviceTop = isDevice ? headlineAreaH + (availH - outerH) / 2 : 0;
-  const screenScale = renderW > 0 ? screenW / renderW : 1;
-  const innerRadius = isDevice ? (preset?.cornerRadius ?? 24) * screenScale : 0;
-  const outerRadius = isDevice ? innerRadius + bezel : 0;
+  const overlay = getOverlay(screen, variantPresetId);
+  const isMac = preset?.platform === "macos";
+  // Canvas is always the ASC preset size. Mac overlay HTML renders at plate
+  // size; phone/iPad render at preset points.
+  const canvasW = preset?.pointWidth ?? 393;
+  const canvasH = preset?.pointHeight ?? 852;
+  const iframeW =
+    isMac && overlay ? Math.max(1, overlay.plateWidth) : canvasW;
+  const iframeH =
+    isMac && overlay ? Math.max(1, overlay.plateHeight) : canvasH;
+  const pxPerPoint = Math.min(wrap.w / canvasW, wrap.h / canvasH, 1);
+  const stageW = Math.max(0, canvasW * pxPerPoint);
+  const stageH = Math.max(0, canvasH * pxPerPoint);
 
   const headline =
     (comp.headlineKey
@@ -189,6 +225,80 @@ export function CompositionPanel({
         stringsMap[comp.headlineKey]?.[config.baseLocale]
       : comp.headlineText?.[previewLocale] ??
         comp.headlineText?.[config.baseLocale]) ?? "";
+
+  const isDevice = comp.mode === "device";
+  const showHeadline = Boolean(headline);
+  // Pass-through: full-bleed shot; headline overlays the top band when present.
+  // Device (phone/iPad): screenshot in a bezel below the headline.
+  // Device (Mac): float the window shot centered — no bezel (chrome is in the image).
+  const headlineAreaH =
+    isDevice || showHeadline ? areaFraction * stageH : 0;
+  const bottomPad = isDevice ? 0.04 * stageH : 0;
+  // Headline horizontal inset — keep in sync with engine headlineSideInset().
+  const sidePad = (isMac ? 0.03 : 0.07) * stageW;
+  // Window float still uses a slightly wider gutter so chrome doesn't kiss the edge.
+  const floatSidePad = (isMac ? 0.05 : 0.08) * stageW;
+  const availH = stageH - (isDevice ? headlineAreaH : 0) - bottomPad;
+  const availW = stageW - floatSidePad * 2;
+
+  let screenW: number;
+  let screenH: number;
+  let bezel: number;
+  let outerW: number;
+  let outerH: number;
+  let deviceLeft: number;
+  let deviceTop: number;
+  let screenScale: number;
+  let innerRadius: number;
+  let outerRadius: number;
+
+  if (!isDevice) {
+    bezel = 0;
+    innerRadius = 0;
+    outerRadius = 0;
+    if (isMac) {
+      // Match engine passthrough: stretch plate to fill the ASC canvas.
+      screenW = stageW;
+      screenH = stageH;
+      outerW = stageW;
+      outerH = stageH;
+      deviceLeft = 0;
+      deviceTop = 0;
+      screenScale = 1; // overridden below with non-uniform scale via width/height
+    } else {
+      screenW = stageW;
+      screenH = stageH;
+      outerW = stageW;
+      outerH = stageH;
+      deviceLeft = 0;
+      deviceTop = 0;
+      screenScale = canvasW > 0 ? stageW / canvasW : 1;
+    }
+  } else if (isMac) {
+    const fitScale = Math.min(availW / iframeW, availH / iframeH);
+    screenW = iframeW * fitScale;
+    screenH = iframeH * fitScale;
+    bezel = 0;
+    outerW = screenW;
+    outerH = screenH;
+    deviceLeft = (stageW - outerW) / 2;
+    deviceTop = headlineAreaH + (availH - outerH) / 2;
+    screenScale = fitScale;
+    innerRadius = 0;
+    outerRadius = 0;
+  } else {
+    const fitScale = Math.min(availW / stageW, availH / stageH);
+    screenW = stageW * fitScale;
+    screenH = stageH * fitScale;
+    bezel = Math.max(1, Math.round(stageW * 0.012));
+    outerW = screenW + bezel * 2;
+    outerH = screenH + bezel * 2;
+    deviceLeft = (stageW - outerW) / 2;
+    deviceTop = headlineAreaH + (availH - outerH) / 2;
+    screenScale = canvasW > 0 ? screenW / canvasW : 1;
+    innerRadius = (preset?.cornerRadius ?? 24) * screenScale;
+    outerRadius = innerRadius + bezel;
+  }
 
   const bgStyle: React.CSSProperties =
     comp.background.type === "solid"
@@ -258,11 +368,17 @@ export function CompositionPanel({
             style={{ flex: 1 }}
             onClick={() => update({ mode: "device" })}
           >
-            Device frame
+            {isMac ? "Float window" : "Device frame"}
           </button>
         </div>
+        {isDevice && isMac && (
+          <p className="hint">
+            Mac screenshots already include window chrome and shadow — we center
+            the image on the canvas without adding a border.
+          </p>
+        )}
 
-        {comp.mode === "device" && (
+        {isDevice && (
           <>
             <div className="section-title">
               Background
@@ -328,108 +444,112 @@ export function CompositionPanel({
                 </div>
               </div>
             )}
-
-            <div className="section-title">
-              Headline
-              <span className="tag scope-screen">this device</span>
-            </div>
-            <div className="field">
-              <label>String key</label>
-              <select
-                value={comp.headlineKey ?? "__none__"}
-                onChange={(e) =>
-                  update({
-                    headlineKey:
-                      e.target.value === "__none__" ? undefined : e.target.value,
-                  })
-                }
-              >
-                <option value="__none__">— none / literal —</option>
-                {summary.keys.map((k) => (
-                  <option key={k.key} value={k.key}>
-                    {k.key}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="add-row" style={{ padding: 0 }}>
-              <input
-                placeholder="New headline copy"
-                value={newHeadline}
-                onChange={(e) => setNewHeadline(e.target.value)}
-              />
-              <button
-                className="ghost"
-                onClick={() => void createHeadline()}
-                disabled={!!busy || !newHeadline.trim()}
-              >
-                Add
-              </button>
-            </div>
-            <div className="field">
-              <label>Headline color</label>
-              <ColorPicker
-                value={comp.headlineColor}
-                onChange={(hex) => update({ headlineColor: hex })}
-              />
-            </div>
-
-            <div className="section-title">
-              Headline size
-              <span className="tag scope-device">{deviceLabel}</span>
-            </div>
-            <div className="field">
-              <label>Size ({(sizePct * 100).toFixed(1)}%)</label>
-              <input
-                type="range"
-                min={0.02}
-                max={0.1}
-                step={0.001}
-                value={sizePct}
-                onChange={(e) =>
-                  updateDevice({ headlineSizePct: Number(e.target.value) })
-                }
-              />
-            </div>
-            <div className="field">
-              <label>Area ({Math.round(areaFraction * 100)}%)</label>
-              <input
-                type="range"
-                min={0.08}
-                max={0.32}
-                step={0.01}
-                value={areaFraction}
-                onChange={(e) =>
-                  updateDevice({
-                    headlineHeightFraction: Number(e.target.value),
-                  })
-                }
-              />
-            </div>
-
-            <div className="section-title">
-              Font
-              <span className="tag scope-all">everywhere</span>
-            </div>
-            <FontPicker
-              projectFonts={projectFonts}
-              family={typo.headlineFont}
-              weight={typo.headlineWeight}
-              italic={typo.headlineStyle === "italic"}
-              previewText={headline || "Headline"}
-              onChange={({ family, weight, italic }) =>
-                updateUniversal({
-                  headlineFont: family,
-                  headlineWeight: weight,
-                  headlineStyle: italic ? "italic" : "normal",
-                })
-              }
-            />
           </>
         )}
-        {comp.mode === "passthrough" && (
-          <p className="hint">Screenshot used as-is — no frame or headline.</p>
+
+        {!isDevice && (
+          <p className="hint">
+            Screenshot fills the canvas. Optionally overlay App Store promo
+            text on top — no background or device frame.
+          </p>
         )}
+
+        <div className="section-title">
+          Headline
+          <span className="tag scope-screen">this device</span>
+        </div>
+        <div className="field">
+          <label>String key</label>
+          <select
+            value={comp.headlineKey ?? "__none__"}
+            onChange={(e) =>
+              update({
+                headlineKey:
+                  e.target.value === "__none__" ? undefined : e.target.value,
+              })
+            }
+          >
+            <option value="__none__">— none / literal —</option>
+            {summary.keys.map((k) => (
+              <option key={k.key} value={k.key}>
+                {k.key}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="add-row" style={{ padding: 0 }}>
+          <input
+            placeholder="New headline copy"
+            value={newHeadline}
+            onChange={(e) => setNewHeadline(e.target.value)}
+          />
+          <button
+            className="ghost"
+            onClick={() => void createHeadline()}
+            disabled={!!busy || !newHeadline.trim()}
+          >
+            Add
+          </button>
+        </div>
+        <div className="field">
+          <label>Headline color</label>
+          <ColorPicker
+            value={comp.headlineColor}
+            onChange={(hex) => update({ headlineColor: hex })}
+          />
+        </div>
+
+        <div className="section-title">
+          Headline size
+          <span className="tag scope-device">{deviceLabel}</span>
+        </div>
+        <div className="field">
+          <label>Size ({(sizePct * 100).toFixed(1)}%)</label>
+          <input
+            type="range"
+            min={0.02}
+            max={0.1}
+            step={0.001}
+            value={sizePct}
+            onChange={(e) =>
+              updateDevice({ headlineSizePct: Number(e.target.value) })
+            }
+          />
+        </div>
+        <div className="field">
+          <label>Area ({Math.round(areaFraction * 100)}%)</label>
+          <input
+            type="range"
+            min={0.08}
+            max={0.32}
+            step={0.01}
+            value={areaFraction}
+            onChange={(e) =>
+              updateDevice({
+                headlineHeightFraction: Number(e.target.value),
+              })
+            }
+          />
+        </div>
+
+        <div className="section-title">
+          Font
+          <span className="tag scope-all">everywhere</span>
+        </div>
+        <FontPicker
+          projectFonts={projectFonts}
+          family={typo.headlineFont}
+          weight={typo.headlineWeight}
+          italic={typo.headlineStyle === "italic"}
+          previewText={headline || "Headline"}
+          onChange={({ family, weight, italic }) =>
+            updateUniversal({
+              headlineFont: family,
+              headlineWeight: weight,
+              headlineStyle: italic ? "italic" : "normal",
+            })
+          }
+        />
       </div>
 
       <div className="composition-preview" ref={stageWrapRef}>
@@ -442,10 +562,15 @@ export function CompositionPanel({
             className="comp-stage"
             style={{ width: stageW, height: stageH, ...(isDevice ? bgStyle : {}) }}
           >
-            {isDevice && headline && (
+            {showHeadline && (
               <div
                 className="comp-headline"
                 style={{
+                  position: isDevice ? undefined : "absolute",
+                  top: isDevice ? undefined : 0,
+                  left: isDevice ? undefined : 0,
+                  right: isDevice ? undefined : 0,
+                  zIndex: isDevice ? undefined : 2,
                   height: headlineAreaH,
                   padding: `0 ${sidePad}px`,
                   color: comp.headlineColor,
@@ -455,6 +580,7 @@ export function CompositionPanel({
                   fontSize: fontPx,
                   letterSpacing: `${typo.headlineLetterSpacing}em`,
                   lineHeight: typo.headlineLineHeight,
+                  pointerEvents: "none",
                 }}
               >
                 <span>{headline}</span>
@@ -465,29 +591,50 @@ export function CompositionPanel({
               style={{
                 left: deviceLeft,
                 top: deviceTop,
-                width: isDevice ? outerW : stageW,
-                height: isDevice ? outerH : stageH,
+                width: isDevice || isMac ? outerW : stageW,
+                height: isDevice || isMac ? outerH : stageH,
                 borderRadius: outerRadius,
                 padding: bezel,
-                background: isDevice ? "#0b0d12" : "transparent",
+                background: isDevice && !isMac ? "#0b0d12" : "transparent",
+                overflow: "hidden",
               }}
             >
               <div
                 className="comp-screen-clip"
-                style={{ borderRadius: innerRadius }}
+                style={{
+                  borderRadius: innerRadius,
+                  width: isMac && !isDevice ? "100%" : undefined,
+                  height: isMac && !isDevice ? "100%" : undefined,
+                  // Phone/iPad keep the dark fill inside the bezel; Mac must stay
+                  // clear so window-shadow alpha blends onto the promo stage.
+                  background: isDevice && !isMac ? "#0b0d12" : "transparent",
+                }}
               >
                 <iframe
                   key={`${screen.id}-${variantPresetId}-${previewLocale}`}
                   title="composed preview"
                   scrolling="no"
                   src={renderUrl(screen.id, previewLocale, variantPresetId)}
-                  style={{
-                    width: renderW,
-                    height: renderH,
-                    border: "none",
-                    transform: `scale(${screenScale})`,
-                    transformOrigin: "top left",
-                  }}
+                  style={
+                    isMac && !isDevice
+                      ? {
+                          width: iframeW,
+                          height: iframeH,
+                          border: "none",
+                          background: "transparent",
+                          // Stretch plate to fill canvas (matches sharp fit:"fill").
+                          transform: `scale(${stageW / iframeW}, ${stageH / iframeH})`,
+                          transformOrigin: "top left",
+                        }
+                      : {
+                          width: iframeW,
+                          height: iframeH,
+                          border: "none",
+                          background: isMac ? "transparent" : undefined,
+                          transform: `scale(${screenScale})`,
+                          transformOrigin: "top left",
+                        }
+                  }
                 />
               </div>
             </div>

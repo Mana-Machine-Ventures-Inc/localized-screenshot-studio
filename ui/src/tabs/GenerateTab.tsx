@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, imageUrl, type CellSelector } from "../api";
+import { getComposition } from "../screens/variants";
 import type {
   AssetCell,
   DevicePreset,
@@ -316,9 +317,19 @@ export function GenerateTab({ config, summary, presets, reload }: Props) {
                 <div className="gen-screen-head">
                   <b>{screen.name}</b>
                   <span className="hint">
-                    {screen.composition?.mode === "passthrough"
-                      ? "pass-through"
-                      : "device frame"}
+                    {(() => {
+                      const mode =
+                        screen.composition?.mode ??
+                        getComposition(screen, screenPresets[0] ?? "")?.mode ??
+                        "device";
+                      if (mode === "passthrough") return "pass-through";
+                      const primary = presets.find(
+                        (p) => p.id === (screenPresets[0] ?? screen.presetIds[0]),
+                      );
+                      return primary?.platform === "macos"
+                        ? "float window"
+                        : "device frame";
+                    })()}
                   </span>
                   <div className="spacer" />
                   {screenActive ? (

@@ -694,6 +694,29 @@ table.matrix th.rowhead {
   font-weight: 700;
   margin-bottom: 6px;
 }
+.detect-text-opt {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin-top: 8px;
+  cursor: pointer;
+}
+.detect-text-opt input[type="checkbox"] {
+  flex: 0 0 auto;
+  margin-top: 3px;
+}
+.detect-text-opt-copy {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.detect-text-opt-title {
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.35;
+}
 .overlay-body {
   grid-template-columns: 1fr 380px;
 }
@@ -1553,7 +1576,9 @@ table.matrix th.rowhead {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: #0b0d12;
+  /* Phone/iPad bezel fill is set inline; leave transparent so Mac window
+     shadows can blend onto the promo stage background. */
+  background: transparent;
 }
 
 /* scope badges in the Compositions controls */
@@ -1933,8 +1958,88 @@ table.matrix th.rowhead {
 /* ---- Unified Screens editor ------------------------------------------- */
 .unified-screens {
   display: flex;
+  flex-direction: row;
+  overflow: hidden;
+  padding: 0;
+  gap: 0;
+}
+.screens-sidebar {
+  flex: 0 0 220px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--border);
+  background: var(--bg-elev);
+}
+.screens-sidebar-head {
+  padding: 12px 14px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.screens-sidebar-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 8px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.screens-sidebar-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+}
+.screens-sidebar-item:hover:not(:disabled) {
+  background: var(--bg-elev-2);
+  border-color: var(--border);
+}
+.screens-sidebar-item.active {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+.screens-sidebar-name {
+  font-weight: 600;
+  font-size: 13px;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.screens-sidebar-meta {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.screens-sidebar-meta.warn {
+  color: var(--warn);
+}
+.screens-sidebar-foot {
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--border);
+}
+.screens-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+.screens-main > .toolbar {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
 }
 .variant-tabs {
   flex-wrap: wrap;

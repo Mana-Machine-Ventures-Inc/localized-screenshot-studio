@@ -137,6 +137,11 @@ export async function buildPlate(
     .filter((c): c is NonNullable<typeof c> => c !== null);
 
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
-  await sharp(sourcePath).composite(composites).png().toFile(outPath);
+  // Keep source alpha (Mac window shadows) so compose can blend onto the promo bg.
+  await sharp(sourcePath)
+    .ensureAlpha()
+    .composite(composites)
+    .png()
+    .toFile(outPath);
   return { width: W, height: H };
 }

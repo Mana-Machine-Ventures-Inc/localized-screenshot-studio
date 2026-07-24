@@ -23,7 +23,7 @@ import type {
   UploadRecord,
 } from "./types.js";
 
-export const DEFAULT_PRESETS = ["iphone-6-9", "ipad-13"];
+export const DEFAULT_PRESETS = ["iphone-6-9", "ipad-13", "mac"];
 
 export const DEFAULT_COMPOSITOR: CompositorConfig = {
   background: { type: "gradient", from: "#0b1020", to: "#1f6feb", angle: 135 },
@@ -283,6 +283,13 @@ class Store {
     cfg.presetIds = ids;
     this.save();
     this.reconcileCells(this.data?.locales ?? [cfg.baseLocale]);
+  }
+
+  /** Ensure a preset is part of the project's device list (e.g. after creating a Mac screen). */
+  ensurePresetId(id: string): void {
+    const cfg = this.getConfig();
+    if (cfg.presetIds.includes(id)) return;
+    this.setPresetIds([...cfg.presetIds, id]);
   }
 
   /**

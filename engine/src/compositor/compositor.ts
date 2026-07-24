@@ -136,16 +136,25 @@ function backgroundCss(bg: CompositorConfig["background"]): string {
     <rect width="100%" height="100%" fill="url(#bg)"/>`;
 }
 
-function backgroundWithHeadlineSvg(
+/** Horizontal margin each side for promo headlines (fraction of canvas width). */
+function headlineSideInset(platform?: DevicePreset["platform"]): number {
+  // Mac Store canvases are wide and short — allow copy closer to the edges.
+  return platform === "macos" ? 0.03 : 0.07;
+}
+
+/** Headline text spans centered in the top headline band (shared by framed + overlay). */
+function headlineTextMarkup(
   W: number,
   H: number,
   headline: string,
   cfg: CompositorConfig,
-): Buffer {
+  platform?: DevicePreset["platform"],
+): string {
   const headlineAreaH = Math.round(H * cfg.headlineHeightFraction);
   const fontSize = Math.round(W * (cfg.headlineSizePct ?? 0.052));
   const lineHeight = Math.round(fontSize * (cfg.headlineLineHeight ?? 1.16));
-  const lines = wrapText(headline, fontSize, W * 0.86);
+  const maxWidth = W * (1 - 2 * headlineSideInset(platform));
+  const lines = wrapText(headline, fontSize, maxWidth);
   const blockH = lines.length * lineHeight;
   const startY = Math.round(headlineAreaH / 2 - blockH / 2 + fontSize * 0.82);
   const tspans = lines
@@ -154,15 +163,38 @@ function backgroundWithHeadlineSvg(
         `<tspan x="${W / 2}" y="${startY + i * lineHeight}">${escapeXml(l)}</tspan>`,
     )
     .join("");
-
   const tracking = (cfg.headlineLetterSpacing ?? -0.01) * fontSize;
-  const svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
-    ${backgroundCss(cfg.background)}
-    <text text-anchor="middle" font-family="${escapeXml(cfg.headlineFont)}" font-weight="${cfg.headlineWeight ?? 800}"
+  return `<text text-anchor="middle" font-family="${escapeXml(cfg.headlineFont)}" font-weight="${cfg.headlineWeight ?? 800}"
       font-style="${escapeXml(cfg.headlineStyle ?? "normal")}"
       font-size="${fontSize}" fill="${escapeXml(cfg.headlineColor)}" letter-spacing="${tracking.toFixed(2)}">
       ${tspans}
-    </text>
+    </text>`;
+}
+
+function backgroundWithHeadlineSvg(
+  W: number,
+  H: number,
+  headline: string,
+  cfg: CompositorConfig,
+  platform?: DevicePreset["platform"],
+): Buffer {
+  const svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+    ${backgroundCss(cfg.background)}
+    ${headlineTextMarkup(W, H, headline, cfg, platform)}
+  </svg>`;
+  return Buffer.from(svg);
+}
+
+/** Transparent full-canvas SVG with only the promo headline (for pass-through overlay). */
+function headlineOverlaySvg(
+  W: number,
+  H: number,
+  headline: string,
+  cfg: CompositorConfig,
+  platform?: DevicePreset["platform"],
+): Buffer {
+  const svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+    ${headlineTextMarkup(W, H, headline, cfg, platform)}
   </svg>`;
   return Buffer.from(svg);
 }
@@ -192,6 +224,7 @@ export async function compose(opts: ComposeOptions): Promise<string> {
   const { preset, config } = opts;
   const W = preset.pixelWidth;
   const H = preset.pixelHeight;
+  const isMac = preset.platform === "macos";
 
   const headlineAreaH = Math.round(H * config.headlineHeightFraction);
   const bottomPadding = Math.round(H * 0.04);
@@ -200,43 +233,77 @@ export async function compose(opts: ComposeOptions): Promise<string> {
   // Fit the device within the area below the headline.
   const availH = H - headlineAreaH - bottomPadding;
   const availW = W - sidePadding * 2;
-  const fitScale = Math.min(availW / W, availH / H);
 
-  const deviceW = Math.round(W * fitScale);
-  const deviceH = Math.round(H * fitScale);
-  const bezel = config.deviceFrame ? Math.round(W * 0.012) : 0;
-  const radius = Math.round(preset.cornerRadius * preset.scale * fitScale);
+  let deviceLayer: Buffer;
+  let layerW: number;
+  let layerH: number;
 
-  // 1) Round the screenshot corners.
-  const screenshot = await sharp(opts.capturePath)
-    .resize(deviceW, deviceH, { fit: "fill" })
-    .composite([
-      { input: roundedMaskSvg(deviceW, deviceH, radius), blend: "dest-in" },
-    ])
-    .png()
-    .toBuffer();
-
-  // 2) Optional bezel behind the screenshot.
-  let deviceLayer = screenshot;
-  let layerW = deviceW;
-  let layerH = deviceH;
-  if (bezel > 0) {
-    layerW = deviceW + bezel * 2;
-    layerH = deviceH + bezel * 2;
-    deviceLayer = await sharp(bezelSvg(layerW, layerH, radius + bezel, "#0b0d12"))
-      .composite([{ input: screenshot, left: bezel, top: bezel }])
+  if (isMac) {
+    // Mac App Store: float the window screenshot (already has chrome + shadow).
+    // Contain-fit into the promo area — no bezel, no corner mask (mask clips shadow).
+    const meta = await sharp(opts.capturePath).metadata();
+    const srcW = Math.max(1, meta.width ?? W);
+    const srcH = Math.max(1, meta.height ?? H);
+    const fitScale = Math.min(availW / srcW, availH / srcH);
+    layerW = Math.max(1, Math.round(srcW * fitScale));
+    layerH = Math.max(1, Math.round(srcH * fitScale));
+    deviceLayer = await sharp(opts.capturePath)
+      .ensureAlpha()
+      .resize(layerW, layerH, { fit: "inside" })
       .png()
       .toBuffer();
+  } else {
+    const fitScale = Math.min(availW / W, availH / H);
+    const deviceW = Math.round(W * fitScale);
+    const deviceH = Math.round(H * fitScale);
+    const bezel = config.deviceFrame ? Math.round(W * 0.012) : 0;
+    const radius = Math.round(preset.cornerRadius * preset.scale * fitScale);
+
+    // 1) Round the screenshot corners.
+    const screenshot = await sharp(opts.capturePath)
+      .resize(deviceW, deviceH, { fit: "fill" })
+      .composite([
+        { input: roundedMaskSvg(deviceW, deviceH, radius), blend: "dest-in" },
+      ])
+      .png()
+      .toBuffer();
+
+    // 2) Optional bezel behind the screenshot.
+    deviceLayer = screenshot;
+    layerW = deviceW;
+    layerH = deviceH;
+    if (bezel > 0) {
+      layerW = deviceW + bezel * 2;
+      layerH = deviceH + bezel * 2;
+      deviceLayer = await sharp(
+        bezelSvg(layerW, layerH, radius + bezel, "#0b0d12"),
+      )
+        .composite([{ input: screenshot, left: bezel, top: bezel }])
+        .png()
+        .toBuffer();
+    }
   }
 
   const deviceLeft = Math.round((W - layerW) / 2);
   const deviceTop = headlineAreaH + Math.round((availH - layerH) / 2);
 
-  // 3) Background + headline, then composite the device.
-  const base = backgroundWithHeadlineSvg(W, H, opts.headline, config);
+  // 3) Background + headline, then composite the device (flattens any alpha).
+  const base = backgroundWithHeadlineSvg(
+    W,
+    H,
+    opts.headline,
+    config,
+    preset.platform,
+  );
   fs.mkdirSync(path.dirname(opts.outPath), { recursive: true });
   await sharp(base)
-    .composite([{ input: deviceLayer, left: deviceLeft, top: Math.max(headlineAreaH, deviceTop) }])
+    .composite([
+      {
+        input: deviceLayer,
+        left: deviceLeft,
+        top: Math.max(headlineAreaH, deviceTop),
+      },
+    ])
     .png()
     .toFile(opts.outPath);
 
@@ -267,7 +334,8 @@ export function resolveCompositor(
     // per-screen
     background: comp.background,
     headlineColor: comp.headlineColor ?? g.headlineColor,
-    deviceFrame: true,
+    // Phone/iPad get a synthetic bezel; Mac window shots already include chrome.
+    deviceFrame: preset.platform !== "macos",
   };
 }
 
@@ -322,6 +390,33 @@ async function passthrough(
     .toFile(outPath);
 }
 
+/**
+ * Full-bleed screenshot with promo headline drawn on top (no background/bezel).
+ */
+async function passthroughWithHeadline(
+  capturePath: string,
+  outPath: string,
+  preset: DevicePreset,
+  headline: string,
+  config: CompositorConfig,
+): Promise<void> {
+  const W = preset.pixelWidth;
+  const H = preset.pixelHeight;
+  fs.mkdirSync(path.dirname(outPath), { recursive: true });
+  const base = await sharp(capturePath)
+    .resize(W, H, { fit: "fill" })
+    .png()
+    .toBuffer();
+  await sharp(base)
+    .composite([
+      {
+        input: headlineOverlaySvg(W, H, headline, config, preset.platform),
+      },
+    ])
+    .png()
+    .toFile(outPath);
+}
+
 /** Compose a cell using its capture + the screen's composition settings. */
 export async function composeCell(cell: AssetCell): Promise<AssetCell> {
   if (!cell.capturePath) {
@@ -338,7 +433,19 @@ export async function composeCell(cell: AssetCell): Promise<AssetCell> {
   );
 
   if (comp.mode === "passthrough") {
-    await passthrough(cell.capturePath, outPath, preset);
+    const headline = headlineFor(screen, comp, cell.locale).trim();
+    if (headline) {
+      const config = resolveCompositor(comp, preset);
+      await passthroughWithHeadline(
+        cell.capturePath,
+        outPath,
+        preset,
+        headline,
+        config,
+      );
+    } else {
+      await passthrough(cell.capturePath, outPath, preset);
+    }
   } else {
     const config = resolveCompositor(comp, preset);
     await compose({

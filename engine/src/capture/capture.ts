@@ -42,10 +42,23 @@ export class CaptureEngine {
     }
     const html = renderOverlayHtml(screen, locale, preset);
 
+    // Mac: capture at the plate's intrinsic size so window chrome/shadow aren't
+    // stretched into the App Store canvas. Phone/iPad use the preset viewport.
+    const overlay = getOverlay(screen, preset.id)!;
+    const viewW =
+      preset.platform === "macos"
+        ? Math.max(1, overlay.plateWidth)
+        : preset.pointWidth;
+    const viewH =
+      preset.platform === "macos"
+        ? Math.max(1, overlay.plateHeight)
+        : preset.pointHeight;
+    const scale = preset.platform === "macos" ? 1 : preset.scale;
+
     const browser = await this.getBrowser();
     const context = await browser.newContext({
-      viewport: { width: preset.pointWidth, height: preset.pointHeight },
-      deviceScaleFactor: preset.scale,
+      viewport: { width: viewW, height: viewH },
+      deviceScaleFactor: scale,
     });
     const page = await context.newPage();
     try {
@@ -64,11 +77,16 @@ export class CaptureEngine {
       fs.mkdirSync(paths.capturesDir, { recursive: true });
       await page.screenshot({
         path: capturePath,
+        // Mac window shots include a soft alpha shadow. Keep it transparent so
+        // compose can blend onto the promo background (omitBackground + a
+        // transparent page). Without this, dark-mode Chromium flattens the
+        // shadow onto black and it becomes a solid border.
+        omitBackground: preset.platform === "macos",
         clip: {
           x: 0,
           y: 0,
-          width: preset.pointWidth,
-          height: preset.pointHeight,
+          width: viewW,
+          height: viewH,
         },
       });
       return { capturePath, overflow };

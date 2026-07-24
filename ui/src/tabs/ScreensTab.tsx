@@ -46,9 +46,12 @@ export function ScreensTab({
   const [armDelete, setArmDelete] = useState(false);
   const [armRemoveVariant, setArmRemoveVariant] = useState(false);
   const [addPreset, setAddPreset] = useState("");
+  const [renaming, setRenaming] = useState(false);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [detectTextOnSwap, setDetectTextOnSwap] = useState(false);
+  const renameInputRef = useRef<HTMLInputElement>(null);
   const armTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const swapInput = useRef<HTMLInputElement>(null);
-  const reocrRef = useRef(false);
 
   const selected =
     config.screens.find((s) => s.id === selectedId && s.kind === "overlay") ??
@@ -70,10 +73,21 @@ export function ScreensTab({
     }
   }, [selected?.id, config.presetIds, variantPresetId, selected]);
 
+  // Cancel inline rename when switching screens.
+  useEffect(() => {
+    setRenaming(false);
+  }, [selected?.id]);
+
+  useEffect(() => {
+    if (renaming) renameInputRef.current?.focus();
+  }, [renaming]);
+
   const availableToAdd = useMemo(() => {
     if (!selected) return presets;
     const have = new Set(getScreenPresetIds(selected, config.presetIds));
-    return presets.filter((p) => config.presetIds.includes(p.id) && !have.has(p.id));
+    // Offer every known preset (including Mac) so a screen can target devices
+    // the project hasn't opted into yet — creating/adding enables them.
+    return presets.filter((p) => !have.has(p.id));
   }, [selected, presets, config.presetIds]);
 
   const presetLabel = (id: string) =>
@@ -90,8 +104,9 @@ export function ScreensTab({
     sourceLocale: string;
     imageDataUrl: string;
     presetId?: string;
+    detectText?: boolean;
   }) => {
-    setBusy("Analyzing screenshot");
+    setBusy(input.detectText ? "Analyzing screenshot" : "Uploading screenshot");
     try {
       const res = await api.createOverlay(input);
       setShowUpload(false);
@@ -105,13 +120,13 @@ export function ScreensTab({
 
   const swap = async (file?: File) => {
     if (!file || !selected) return;
-    setBusy("Swapping image");
+    setBusy(detectTextOnSwap ? "Analyzing screenshot" : "Swapping image");
     try {
       const dataUrl = await readFileAsDataUrl(file);
       await api.replaceSource(
         selected.id,
         dataUrl,
-        reocrRef.current,
+        detectTextOnSwap,
         variantPresetId,
       );
       await reload();
@@ -121,13 +136,28 @@ export function ScreensTab({
     }
   };
 
-  const rename = async () => {
+  const startRename = () => {
     if (!selected) return;
-    const name = window.prompt("Rename screen", selected.name)?.trim();
-    if (!name || name === selected.name) return;
+    setRenameDraft(selected.name);
+    setRenaming(true);
+  };
+
+  const cancelRename = () => {
+    setRenaming(false);
+    setRenameDraft("");
+  };
+
+  const commitRename = async () => {
+    if (!selected) return;
+    const name = renameDraft.trim();
+    if (!name || name === selected.name) {
+      cancelRename();
+      return;
+    }
     setBusy("Renaming");
     try {
       await api.updateOverlay(selected.id, { name });
+      setRenaming(false);
       await reload();
     } finally {
       setBusy(null);
@@ -178,25 +208,58 @@ export function ScreensTab({
     ? Boolean(getOverlay(selected, variantPresetId))
     : false;
 
+  const screenMeta = (screenId: string) => {
+    const s = overlayScreens.find((x) => x.id === screenId);
+    if (!s) return "";
+    const ids = getScreenPresetIds(s, config.presetIds);
+    const missing = ids.filter((id) => !getOverlay(s, id)).length;
+    if (!ids.length) return "no devices";
+    if (missing) return `${ids.length - missing}/${ids.length} devices`;
+    return `${ids.length} device${ids.length === 1 ? "" : "s"}`;
+  };
+
   return (
     <div className="tab-content screens-tab unified-screens">
-      <div className="toolbar">
-        <div className="field inline">
-          <label>Screen</label>
-          <select
-            value={selected?.id ?? ""}
-            onChange={(e) => onSelect(e.target.value)}
-            disabled={!overlayScreens.length}
-          >
-            {overlayScreens.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
-            ))}
-            {!overlayScreens.length && <option value="">No screens yet</option>}
-          </select>
+      <aside className="screens-sidebar">
+        <div className="screens-sidebar-head">Screens</div>
+        <div className="screens-sidebar-list">
+          {overlayScreens.map((s) => {
+            const active = s.id === selected?.id;
+            const ids = getScreenPresetIds(s, config.presetIds);
+            const incomplete = ids.some((id) => !getOverlay(s, id));
+            return (
+              <button
+                key={s.id}
+                type="button"
+                className={`screens-sidebar-item${active ? " active" : ""}`}
+                onClick={() => onSelect(s.id)}
+              >
+                <span className="screens-sidebar-name">{s.name}</span>
+                <span className={`screens-sidebar-meta${incomplete ? " warn" : ""}`}>
+                  {screenMeta(s.id)}
+                </span>
+              </button>
+            );
+          })}
+          {!overlayScreens.length && (
+            <p className="hint" style={{ padding: "8px 10px", margin: 0 }}>
+              No screens yet.
+            </p>
+          )}
         </div>
+        <div className="screens-sidebar-foot">
+          <button
+            className="primary"
+            style={{ width: "100%" }}
+            onClick={() => setShowUpload(true)}
+          >
+            + New screen
+          </button>
+        </div>
+      </aside>
 
+      <div className="screens-main">
+      <div className="toolbar">
         {selected && variantIds.length > 0 && (
           <div className="variant-tabs seg">
             {variantIds.map((id) => (
@@ -253,19 +316,66 @@ export function ScreensTab({
 
         {selected && (
           <>
-            <button className="ghost" onClick={() => void rename()} disabled={!!busy}>
-              Rename
-            </button>
+            {renaming ? (
+              <div className="row" style={{ gap: 6 }}>
+                <input
+                  ref={renameInputRef}
+                  value={renameDraft}
+                  onChange={(e) => setRenameDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void commitRename();
+                    if (e.key === "Escape") cancelRename();
+                  }}
+                  disabled={!!busy}
+                  style={{ width: 160 }}
+                  aria-label="New screen name"
+                />
+                <button
+                  className="primary mini"
+                  disabled={!!busy || !renameDraft.trim()}
+                  onClick={() => void commitRename()}
+                >
+                  Save
+                </button>
+                <button
+                  className="ghost mini"
+                  disabled={!!busy}
+                  onClick={cancelRename}
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <button
+                className="ghost"
+                onClick={startRename}
+                disabled={!!busy}
+              >
+                Rename
+              </button>
+            )}
             <button
               className="ghost"
               onClick={() => {
-                reocrRef.current = false;
                 swapInput.current?.click();
               }}
               disabled={!!busy}
             >
               Swap image
             </button>
+            <label
+              className="row"
+              style={{ gap: 6, alignItems: "center" }}
+              title="When swapping or attaching an image, run OCR and replace text slots"
+            >
+              <input
+                type="checkbox"
+                checked={detectTextOnSwap}
+                onChange={(e) => setDetectTextOnSwap(e.target.checked)}
+                disabled={!!busy}
+              />
+              <span className="hint">Detect text</span>
+            </label>
             {variantIds.length > 1 && (
               <button
                 className="ghost danger"
@@ -307,9 +417,6 @@ export function ScreensTab({
         />
         <div className="spacer" />
         {busy && <span className="hint">{busy}…</span>}
-        <button className="primary" onClick={() => setShowUpload(true)}>
-          + New screen
-        </button>
       </div>
 
       <div className="unified-screens-body">
@@ -351,13 +458,13 @@ export function ScreensTab({
                 <h2>{presetLabel(variantPresetId)} needs a screenshot</h2>
                 <p>
                   This device variant has composition settings but no image yet.
-                  Upload a screenshot for this device size.
+                  Upload a screenshot for this device size. Use Detect text in
+                  the toolbar if you want OCR slots created automatically.
                 </p>
                 <button
                   className="primary"
                   disabled={!!busy}
                   onClick={() => {
-                    reocrRef.current = true;
                     swapInput.current?.click();
                   }}
                 >
@@ -382,19 +489,22 @@ export function ScreensTab({
         ) : (
           <div className="empty-state">
             <h2>No screens yet</h2>
-            <p>Upload a screenshot to detect text and start localizing.</p>
+            <p>Upload a screenshot to start localizing. Text detection is optional.</p>
             <button className="primary" onClick={() => setShowUpload(true)}>
               Upload screenshot
             </button>
           </div>
         )}
       </div>
+      </div>
 
       {showUpload && (
         <OverlayUploadModal
           summary={summary}
-          presets={presets.filter((p) => config.presetIds.includes(p.id))}
-          busy={busy === "Analyzing screenshot"}
+          presets={presets}
+          busy={
+            busy === "Analyzing screenshot" || busy === "Uploading screenshot"
+          }
           onClose={() => setShowUpload(false)}
           onCreate={create}
         />

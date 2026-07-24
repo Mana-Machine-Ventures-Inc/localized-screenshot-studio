@@ -122,8 +122,17 @@ export function renderOverlayHtml(
   }
 
   const isRtl = ["ar", "he", "fa", "ur"].some((l) => locale.startsWith(l));
-  const W = preset.pointWidth;
-  const H = preset.pointHeight;
+  // Mac window screenshots keep their intrinsic plate size so chrome/shadow
+  // aren't stretched into the 16:10 App Store canvas. Phone/iPad still render
+  // into the preset viewport (device screen size).
+  const usePlateSize = preset.platform === "macos";
+  const W = usePlateSize
+    ? Math.max(1, overlay.plateWidth)
+    : preset.pointWidth;
+  const H = usePlateSize
+    ? Math.max(1, overlay.plateHeight)
+    : preset.pointHeight;
+  const plateFit = usePlateSize ? "contain" : "fill";
 
   const slotsHtml = overlay.slots
     .map((slot) => {
@@ -177,12 +186,12 @@ export function renderOverlayHtml(
 <style>
   ${fontFaces(tokens)}
   *,*::before,*::after{box-sizing:border-box;}
-  html,body{margin:0;padding:0;}
+  html,body{margin:0;padding:0;${usePlateSize ? "background:transparent;color-scheme:only light;" : ""}}
   body{width:${W}px;height:${H}px;overflow:hidden;
     font-family:-apple-system,system-ui,"Segoe UI",Roboto,sans-serif;
     -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;}
-  #lss-root{position:relative;width:${W}px;height:${H}px;overflow:hidden;}
-  #lss-plate{position:absolute;inset:0;width:100%;height:100%;object-fit:fill;}
+  #lss-root{position:relative;width:${W}px;height:${H}px;overflow:hidden;${usePlateSize ? "background:transparent;" : ""}}
+  #lss-plate{position:absolute;inset:0;width:100%;height:100%;object-fit:${plateFit};}
   .lss-slot{position:absolute;display:flex;overflow:hidden;}
   .lss-text{display:block;}
 </style>

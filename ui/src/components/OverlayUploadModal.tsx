@@ -11,6 +11,7 @@ interface Props {
     sourceLocale: string;
     imageDataUrl: string;
     presetId?: string;
+    detectText?: boolean;
   }) => void;
 }
 
@@ -34,6 +35,7 @@ export function OverlayUploadModal({
   const [sourceLocale, setSourceLocale] = useState(summary.baseLocale);
   const [presetId, setPresetId] = useState("");
   const [dataUrl, setDataUrl] = useState<string>();
+  const [detectText, setDetectText] = useState(false);
 
   const pick = async (file?: File) => {
     if (!file) return;
@@ -48,6 +50,7 @@ export function OverlayUploadModal({
       sourceLocale,
       imageDataUrl: dataUrl,
       presetId: presetId || undefined,
+      detectText,
     });
   };
 
@@ -60,8 +63,8 @@ export function OverlayUploadModal({
       >
         <div className="modal-title">Upload a screenshot</div>
         <p className="hint">
-          We’ll detect the on-screen text, match it to your localizable strings,
-          and produce a clean plate you can re-localize.
+          Attach a source image for this screen. Text detection is optional —
+          turn it on only when you want slots auto-created from OCR.
         </p>
 
         <div className="field">
@@ -119,11 +122,30 @@ export function OverlayUploadModal({
               {presets.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.label}
+                  {p.platform === "macos" ? " · macOS" : ""}
                 </option>
               ))}
             </select>
           </div>
         </div>
+
+        <label className="detect-text-opt">
+          <input
+            type="checkbox"
+            checked={detectText}
+            onChange={(e) => setDetectText(e.target.checked)}
+            disabled={busy}
+          />
+          <span className="detect-text-opt-copy">
+            <span className="detect-text-opt-title">
+              Detect text and create fields
+            </span>
+            <span className="hint">
+              Matches OCR to your localizable strings. Leave off to add slots
+              yourself.
+            </span>
+          </span>
+        </label>
 
         <div className="row" style={{ gap: 8, marginTop: 14 }}>
           <button
@@ -131,7 +153,11 @@ export function OverlayUploadModal({
             onClick={submit}
             disabled={busy || !dataUrl || !name.trim()}
           >
-            {busy ? "Analyzing…" : "Detect text & create"}
+            {busy
+              ? detectText
+                ? "Analyzing…"
+                : "Uploading…"
+              : "Create screen"}
           </button>
           <button className="ghost" onClick={onClose} disabled={busy}>
             Cancel
