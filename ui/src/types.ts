@@ -127,6 +127,7 @@ export interface AssetCell {
   overflow?: boolean;
   lastError?: string;
   ascScreenshotId?: string;
+  updatedAt?: string;
 }
 
 export interface CompositorConfig {

@@ -218,6 +218,7 @@ export const api = {
     sourceLocale?: string;
     imageDataUrl: string;
     presetId?: string;
+    detectText?: boolean;
   }) =>
     req<{
       screen: ScreenTemplate;
@@ -300,8 +301,10 @@ export interface CellSelector {
   presetIds?: string[];
 }
 
-export function imageUrl(path: string): string {
-  return `${API_BASE}/api/image?path=${encodeURIComponent(path)}&t=${Date.now()}`;
+/** Serve a project asset; pass `bust` (e.g. cell.updatedAt) so the URL stays stable across re-renders. */
+export function imageUrl(path: string, bust?: string | number): string {
+  const t = bust != null && bust !== "" ? String(bust) : "1";
+  return `${API_BASE}/api/image?path=${encodeURIComponent(path)}&t=${encodeURIComponent(t)}`;
 }
 
 export function renderUrl(

@@ -28,6 +28,8 @@ interface ActiveJob {
   scope: string;
   total: number;
   done: number;
+  /** Cell id currently being captured/composed. */
+  workingId?: string;
   stopping?: boolean;
   error?: string;
 }
@@ -45,8 +47,36 @@ export function GenerateTab({ config, summary, presets, reload }: Props) {
     count: number;
     label: string;
   } | null>(null);
+  /** Fresh cells from capture/compose — avoids full-project reload mid-run. */
+  const [cellOverrides, setCellOverrides] = useState<Record<string, AssetCell>>(
+    {},
+  );
   const cancelRef = useRef(false);
   const aliveRef = useRef(true);
+
+  // Drop overrides once parent config catches up after reload().
+  useEffect(() => {
+    setCellOverrides((prev) => {
+      if (!Object.keys(prev).length) return prev;
+      const next = { ...prev };
+      let changed = false;
+      for (const id of Object.keys(next)) {
+        const fromConfig = config.cells.find((c) => c.id === id);
+        const local = next[id];
+        if (
+          fromConfig &&
+          fromConfig.state === local.state &&
+          fromConfig.composedPath === local.composedPath &&
+          fromConfig.capturePath === local.capturePath &&
+          (fromConfig.updatedAt ?? "") >= (local.updatedAt ?? "")
+        ) {
+          delete next[id];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [config.cells]);
 
   // Close the lightbox / confirm dialog on Escape.
   useEffect(() => {
@@ -70,6 +100,18 @@ export function GenerateTab({ config, summary, presets, reload }: Props) {
     };
   }, []);
 
+  const cellFor = (id: string): AssetCell | undefined =>
+    cellOverrides[id] ?? config.cells.find((c) => c.id === id);
+
+  const mergeCells = (cells: AssetCell[]) => {
+    if (!cells.length) return;
+    setCellOverrides((prev) => {
+      const next = { ...prev };
+      for (const c of cells) next[c.id] = c;
+      return next;
+    });
+  };
+
   const presetsForScreen = (s: ScreenTemplate) =>
     s.presetIds.length ? s.presetIds : config.presetIds;
 
@@ -85,8 +127,8 @@ export function GenerateTab({ config, summary, presets, reload }: Props) {
     return work;
   };
 
-  // Capture + compose each cell one at a time so progress is observable and the
-  // run can be cancelled between cells. We only care about the composed result.
+  // Capture + compose one cell at a time. Merge API cell payloads into local
+  // overrides so thumbs appear immediately; reload the project once at the end.
   const runCells = async (work: WorkItem[], scope: string) => {
     if (active || !work.length) return;
     cancelRef.current = false;
@@ -96,17 +138,23 @@ export function GenerateTab({ config, summary, presets, reload }: Props) {
       for (let i = 0; i < work.length; i++) {
         if (cancelRef.current) break;
         const w = work[i];
-        const sel = { screenId: w.screenId, locales: [w.locale], presetIds: [w.pid] };
+        const workingId = `${w.screenId}__${w.locale}__${w.pid}`;
+        setActive((a) => (a ? { ...a, workingId } : a));
+        const sel = {
+          screenId: w.screenId,
+          locales: [w.locale],
+          presetIds: [w.pid],
+        };
         await api.capture(sel);
-        await api.compose(sel);
+        const { cells } = await api.compose(sel);
         if (!aliveRef.current) return;
-        setActive((a) => (a ? { ...a, done: i + 1 } : a));
-        await reload();
+        mergeCells(cells);
+        setActive((a) =>
+          a ? { ...a, done: i + 1, workingId: undefined } : a,
+        );
       }
     } catch (e) {
       if (aliveRef.current) {
-        // Surface the error but always release `active`, otherwise the toolbar
-        // stays stuck and "Delete all"/"Generate all" remain disabled.
         setGenError(String(e instanceof Error ? e.message : e));
         setActive(null);
         await reload();
@@ -133,11 +181,19 @@ export function GenerateTab({ config, summary, presets, reload }: Props) {
   // --- delete generated artifacts ----------------------------------------
   const isGenerated = (c: AssetCell) =>
     Boolean(c.composedPath || c.capturePath);
-  const countAll = config.cells.filter(isGenerated).length;
+
+  const allDisplayCells = (): AssetCell[] => {
+    const byId = new Map<string, AssetCell>();
+    for (const c of config.cells) byId.set(c.id, c);
+    for (const c of Object.values(cellOverrides)) byId.set(c.id, c);
+    return [...byId.values()];
+  };
+
+  const countAll = allDisplayCells().filter(isGenerated).length;
   const countScreen = (sid: string) =>
-    config.cells.filter((c) => c.screenId === sid && isGenerated(c)).length;
+    allDisplayCells().filter((c) => c.screenId === sid && isGenerated(c)).length;
   const countDevice = (sid: string, pid: string) =>
-    config.cells.filter(
+    allDisplayCells().filter(
       (c) => c.screenId === sid && c.presetId === pid && isGenerated(c),
     ).length;
 
@@ -153,6 +209,7 @@ export function GenerateTab({ config, summary, presets, reload }: Props) {
     const { sel } = pendingDelete;
     setPendingDelete(null);
     await api.clearCells(sel);
+    setCellOverrides({});
     await reload();
   };
 
@@ -160,16 +217,22 @@ export function GenerateTab({ config, summary, presets, reload }: Props) {
   // and the tile flips back to a regenerate button.
   const clearCell = async (item: WorkItem) => {
     if (active) return;
+    const id = `${item.screenId}__${item.locale}__${item.pid}`;
     await api.clearCells({
       screenId: item.screenId,
       locales: [item.locale],
       presetIds: [item.pid],
     });
+    setCellOverrides((prev) => {
+      if (!(id in prev)) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
     await reload();
   };
 
-  const deleteAll = () =>
-    void clear({}, countAll, "all screens");
+  const deleteAll = () => void clear({}, countAll, "all screens");
   const deleteScreen = (screen: ScreenTemplate) =>
     void clear({ screenId: screen.id }, countScreen(screen.id), screen.name);
   const deleteDevice = (screen: ScreenTemplate, pid: string) =>
@@ -302,13 +365,14 @@ export function GenerateTab({ config, summary, presets, reload }: Props) {
                       <div className="gen-row">
                         {locales.map((locale) => {
                           const id = `${screen.id}__${locale}__${pid}`;
-                          const cell = config.cells.find((c) => c.id === id);
+                          const cell = cellFor(id);
+                          const bust = cell?.updatedAt;
                           const src = cell?.composedPath
-                            ? imageUrl(cell.composedPath)
+                            ? imageUrl(cell.composedPath, bust)
                             : cell?.capturePath
-                              ? imageUrl(cell.capturePath)
+                              ? imageUrl(cell.capturePath, bust)
                               : undefined;
-                          const cellBusy = active?.scope === `cell:${id}`;
+                          const inFlight = active?.workingId === id;
                           return (
                             <div
                               className="gen-cell"
@@ -323,9 +387,14 @@ export function GenerateTab({ config, summary, presets, reload }: Props) {
                                 title={src ? "Click to view full size" : undefined}
                               >
                                 {src ? (
-                                  <img src={src} alt={`${screen.name} ${locale}`} />
+                                  <img
+                                    src={src}
+                                    alt={`${screen.name} ${locale}`}
+                                  />
                                 ) : (
-                                  <div className="gen-empty">not generated</div>
+                                  <div className="gen-empty">
+                                    {inFlight ? "…" : "not generated"}
+                                  </div>
                                 )}
                               </div>
                               <div className="gen-cell-foot">
@@ -341,7 +410,11 @@ export function GenerateTab({ config, summary, presets, reload }: Props) {
                                     disabled={!!active}
                                     title="Delete this screenshot (then regenerate)"
                                     onClick={() =>
-                                      void clearCell({ screenId: screen.id, locale, pid })
+                                      void clearCell({
+                                        screenId: screen.id,
+                                        locale,
+                                        pid,
+                                      })
                                     }
                                   >
                                     🗑
@@ -352,10 +425,14 @@ export function GenerateTab({ config, summary, presets, reload }: Props) {
                                     disabled={!!active}
                                     title="Generate this screenshot"
                                     onClick={() =>
-                                      regenerateCell({ screenId: screen.id, locale, pid })
+                                      regenerateCell({
+                                        screenId: screen.id,
+                                        locale,
+                                        pid,
+                                      })
                                     }
                                   >
-                                    {cellBusy ? "…" : "↻"}
+                                    {inFlight ? "…" : "↻"}
                                   </button>
                                 )}
                               </div>

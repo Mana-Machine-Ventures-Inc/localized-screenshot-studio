@@ -24,6 +24,26 @@ const TABS = [
 ] as const;
 type Tab = (typeof TABS)[number];
 
+const TAB_STORAGE_KEY = "lss.activeTab";
+
+function readStoredTab(): Tab {
+  try {
+    const v = localStorage.getItem(TAB_STORAGE_KEY);
+    if (v && (TABS as readonly string[]).includes(v)) return v as Tab;
+  } catch {
+    /* private mode / unavailable */
+  }
+  return "Overview";
+}
+
+function writeStoredTab(tab: Tab) {
+  try {
+    localStorage.setItem(TAB_STORAGE_KEY, tab);
+  } catch {
+    /* ignore */
+  }
+}
+
 export function App() {
   const [project, setProject] = useState<ProjectResponse | null>(null);
   const [summary, setSummary] = useState<ProjectSummary | null>(null);
@@ -33,7 +53,7 @@ export function App() {
   const [hasCreds, setHasCreds] = useState(false);
   const [showCreds, setShowCreds] = useState(false);
   const [job, setJob] = useState<UploadJob | null>(null);
-  const [tab, setTab] = useState<Tab>("Overview");
+  const [tab, setTabState] = useState<Tab>(readStoredTab);
   const [tick, setTick] = useState(0);
   const [connectFailed, setConnectFailed] = useState(false);
   const [connectTick, setConnectTick] = useState(0);
@@ -44,6 +64,19 @@ export function App() {
 
   const config = project?.open ? project.config : undefined;
 
+  // Persist immediately (not only in an effect) so a webview kill while the
+  // app is backgrounded behind Xcode still restores the right tab. Prefer
+  // localStorage: sessionStorage dies with WKWebView's content process.
+  const setTab = (next: Tab) => {
+    writeStoredTab(next);
+    setTabState(next);
+  };
+
+  // Also sync on mount / Fast Refresh so a tab chosen before persistence existed
+  // still gets written before a Vite disconnect reload.
+  useEffect(() => {
+    writeStoredTab(tab);
+  }, [tab]);
   // Load the project's embedded fonts into the document so the in-app editor
   // canvas renders with the same typefaces as the server-side preview/output
   // (otherwise the source-locale editing view falls back to a system font and
@@ -72,7 +105,9 @@ export function App() {
   }, [config]);
 
   // With no project open, the only usable tab is Project — never strand the
-  // user on a blank Overview/Strings/etc.
+  // user on a blank Overview/Strings/etc. Skip while still connecting
+  // (project === null) so a restored tab isn't overwritten by a transient
+  // closed response during engine reconnect.
   useEffect(() => {
     if (project && !project.open && tab !== "Project") setTab("Project");
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -88,7 +123,12 @@ export function App() {
 
   async function reload() {
     const p = await api.getProject();
-    setProject(p);
+    // Keep the last open project in UI state if the engine briefly reports
+    // closed mid-restart — flipping to closed remounts tabs and cancels Generate.
+    setProject((prev) => {
+      if (!p.open && prev?.open) return prev;
+      return p;
+    });
     if (p.open && p.data) setSummary(p.data);
     setTick((t) => t + 1);
   }
@@ -110,11 +150,9 @@ export function App() {
           .ascStatus()
           .then((s) => setHasCreds(s.hasCredentials))
           .catch(() => {});
-        // land on the Overview dashboard once a project is open
-        setProject((p) => {
-          if (p?.open) setTab("Overview");
-          return p;
-        });
+        // Do not force Overview here — reconnect / HMR remount used to reset
+        // the tab mid-Generate. Tab is restored from localStorage; openProject
+        // still lands on Overview intentionally.
       } catch {
         if (cancelled) return;
         attempts += 1;
