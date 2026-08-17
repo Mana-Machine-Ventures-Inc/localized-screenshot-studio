@@ -85,14 +85,125 @@ export async function sampleBackgroundColor(
   });
 }
 
-function luminance(hex: string): number {
+function hexToRgb(hex: string): Rgb | null {
   const m = /^#?([0-9a-f]{6})$/i.exec(hex);
-  if (!m) return 1;
+  if (!m) return null;
   const n = parseInt(m[1], 16);
-  const r = (n >> 16) & 255;
-  const g = (n >> 8) & 255;
-  const b = n & 255;
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
+
+function luminanceRgb({ r, g, b }: Rgb): number {
   return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+}
+
+function luminance(hex: string): number {
+  const rgb = hexToRgb(hex);
+  return rgb ? luminanceRgb(rgb) : 1;
+}
+
+function colorDist(a: Rgb, b: Rgb): number {
+  return Math.hypot(a.r - b.r, a.g - b.g, a.b - b.b);
+}
+
+function estimateWeight(
+  data: Buffer,
+  width: number,
+  height: number,
+  channels: number,
+  bg: Rgb,
+  threshold: number,
+): number {
+  const runs: number[] = [];
+  for (let y = 0; y < height; y++) {
+    let run = 0;
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * channels;
+      const ink =
+        colorDist({ r: data[i], g: data[i + 1], b: data[i + 2] }, bg) >=
+        threshold;
+      if (ink) run += 1;
+      else if (run >= 2) {
+        runs.push(run);
+        run = 0;
+      } else run = 0;
+    }
+    if (run >= 2) runs.push(run);
+  }
+  if (runs.length < 8) return 400;
+  const sorted = [...runs].sort((a, b) => a - b);
+  const stem = sorted[Math.floor(sorted.length * 0.35)];
+  const ratio = stem / Math.max(1, height);
+  if (ratio < 0.145) return 400;
+  if (ratio < 0.185) return 500;
+  if (ratio < 0.23) return 600;
+  return 700;
+}
+
+/**
+ * Sample glyph appearance: the blended ink color (so frosted white stays
+ * slightly blue) and a weight from stem thickness.
+ */
+export async function sampleGlyphStyle(
+  src: string | Buffer,
+  boxPx: { x: number; y: number; w: number; h: number },
+  backgroundHex: string,
+  W: number,
+  H: number,
+): Promise<{ color: string; weight: number }> {
+  const insetX = boxPx.w * 0.08;
+  const insetY = boxPx.h * 0.1;
+  const region = clampRegion(
+    boxPx.x + insetX,
+    boxPx.y + insetY,
+    boxPx.w - insetX * 2,
+    boxPx.h - insetY * 2,
+    W,
+    H,
+  );
+  const fallback = {
+    color: contrastTextColor(backgroundHex),
+    weight: 400,
+  };
+  if (!region) return fallback;
+  const bg = hexToRgb(backgroundHex);
+  if (!bg) return fallback;
+
+  try {
+    const { data, info } = await sharp(src)
+      .extract(region)
+      .ensureAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    const ch = info.channels;
+    const ink: Rgb[] = [];
+    const threshold = 22;
+    for (let i = 0; i < data.length; i += ch) {
+      const p = { r: data[i], g: data[i + 1], b: data[i + 2] };
+      if (colorDist(p, bg) >= threshold) ink.push(p);
+    }
+    if (ink.length < 12) return fallback;
+    ink.sort((a, b) => luminanceRgb(a) - luminanceRgb(b));
+    const lo = Math.floor(ink.length * 0.15);
+    const hi = Math.ceil(ink.length * 0.85);
+    const body = ink.slice(lo, Math.max(lo + 1, hi));
+    return {
+      color: toHex({
+        r: median(body.map((c) => c.r)),
+        g: median(body.map((c) => c.g)),
+        b: median(body.map((c) => c.b)),
+      }),
+      weight: estimateWeight(
+        data,
+        info.width,
+        info.height,
+        ch,
+        bg,
+        threshold,
+      ),
+    };
+  } catch {
+    return fallback;
+  }
 }
 
 /** Pick a legible text color (dark on light, light on dark) for a background. */

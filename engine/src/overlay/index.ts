@@ -17,6 +17,7 @@ import { matchText } from "./match.js";
 import {
   buildPlate,
   sampleBackgroundColor,
+  sampleGlyphStyle,
   contrastTextColor,
 } from "./plate.js";
 
@@ -548,6 +549,7 @@ export async function analyzeRegion(
   const tmp = path.join(os.tmpdir(), `lss-region-${Date.now()}.png`);
   await sharp(sourceAbs).extract({ left, top, width, height }).png().toFile(tmp);
   let ocr: OcrResult;
+  let cropRelative = true;
   try {
     ocr = await detectText(tmp);
   } finally {
@@ -564,24 +566,64 @@ export async function analyzeRegion(
       engine: full.engine,
       lines: full.lines.filter((line) => boxesOverlap(line, boxNorm)),
     };
+    cropRelative = false;
   }
 
-  const detectedText = ocr.lines.map((l) => l.text).join(" ").trim();
+  const mapped = ocr.lines.map((line) =>
+    cropRelative
+      ? {
+          ...line,
+          x: (left + line.x * width) / W,
+          y: (top + line.y * height) / H,
+          w: (line.w * width) / W,
+          h: (line.h * height) / H,
+        }
+      : line,
+  );
+
+  const detectedText = mapped.map((l) => l.text).join(" ").trim();
   const match = detectedText
     ? matchText(detectedText, overlay.sourceLocale)
     : { score: 0, method: "none" as const };
-  const background = await sampleBackgroundColor(sourceAbs, boxPx, W, H);
+
+  const glyph =
+    mapped.length > 0
+      ? {
+          x: Math.min(...mapped.map((l) => l.x)),
+          y: Math.min(...mapped.map((l) => l.y)),
+          w: Math.max(...mapped.map((l) => l.x + l.w)) - Math.min(...mapped.map((l) => l.x)),
+          h: Math.max(...mapped.map((l) => l.y + l.h)) - Math.min(...mapped.map((l) => l.y)),
+        }
+      : boxNorm;
+  const glyphPx = {
+    x: glyph.x * W,
+    y: glyph.y * H,
+    w: glyph.w * W,
+    h: glyph.h * H,
+  };
+
+  // Background from just outside the glyphs (pill fill), not the page around
+  // the dragged box. Ink from pixels that are not that fill.
+  const background = await sampleBackgroundColor(sourceAbs, glyphPx, W, H);
+  const glyphStyle = detectedText
+    ? await sampleGlyphStyle(sourceAbs, glyphPx, background, W, H)
+    : { color: contrastTextColor(background), weight: 400 };
+
   const sibling = overlay.slots[0]?.type;
+  // Vision boxes are a bit loose around the cap; 0.82 keeps CSS em from
+  // overshooting the way / 0.72 did.
+  const ocrH = mapped.length ? Math.max(...mapped.map((l) => l.h)) : boxNorm.h;
+  const fontSizePct = Math.max(0.008, Math.min(0.2, ocrH / 0.82));
 
   return {
     detectedText: detectedText || undefined,
     linkedKey: match.key,
-    confidence: match.key ? match.score : ocr.lines[0]?.confidence,
+    confidence: match.key ? match.score : mapped[0]?.confidence,
     background,
-    textColor: contrastTextColor(background),
+    textColor: glyphStyle.color,
     fontFamily: sibling?.fontFamily ?? defaultFontFamily(),
-    fontWeight: sibling?.fontWeight ?? 600,
-    fontSizePct: boxNorm.h * 0.82,
+    fontWeight: glyphStyle.weight,
+    fontSizePct,
     ocrEngine: ocr.engine,
   };
 }
