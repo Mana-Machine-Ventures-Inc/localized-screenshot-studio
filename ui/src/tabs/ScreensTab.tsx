@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import type { DevicePreset, ProjectConfig, ProjectSummary } from "../types";
-import { OverlayEditor } from "../components/OverlayEditor";
+import {
+  OverlayEditor,
+  type OverlayEditorHandle,
+} from "../components/OverlayEditor";
 import { CompositionPanel } from "../components/CompositionPanel";
 import { OverlayUploadModal } from "../components/OverlayUploadModal";
 import { IngestFolderModal } from "../components/IngestFolderModal";
@@ -10,6 +13,14 @@ import {
   getScreenPresetIds,
   primaryPresetId,
 } from "../screens/variants";
+import { isTextEditingTarget, useCommandHistory } from "../history";
+import { frameColorPalette } from "../projectColors";
+
+export interface ScreensJump {
+  screenId: string;
+  locale: string;
+  presetId: string;
+}
 
 interface Props {
   config: ProjectConfig;
@@ -20,6 +31,9 @@ interface Props {
   onSelect: (id: string | undefined) => void;
   previewLocale: string;
   onPreviewLocale: (locale: string) => void;
+  /** One-shot: open this device variant in Frame mode (from Generate → Edit). */
+  jumpTo?: ScreensJump | null;
+  onJumpApplied?: () => void;
 }
 
 function readFileAsDataUrl(file: File): Promise<string> {
@@ -40,6 +54,8 @@ export function ScreensTab({
   onSelect,
   previewLocale,
   onPreviewLocale,
+  jumpTo,
+  onJumpApplied,
 }: Props) {
   const overlayScreens = useMemo(
     () => config.screens.filter((s) => s.kind === "overlay"),
@@ -49,16 +65,15 @@ export function ScreensTab({
     () => overlayScreens.map((s) => s.id).join("\0"),
     [overlayScreens],
   );
+  const palette = useMemo(() => frameColorPalette(config), [config]);
   const [showUpload, setShowUpload] = useState(false);
   const [showIngest, setShowIngest] = useState(false);
   const [ingestReport, setIngestReport] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [armDelete, setArmDelete] = useState(false);
   const [armRemoveVariant, setArmRemoveVariant] = useState(false);
-  const [addPreset, setAddPreset] = useState("");
   const [renaming, setRenaming] = useState(false);
   const [renameDraft, setRenameDraft] = useState("");
-  const [detectTextOnSwap, setDetectTextOnSwap] = useState(false);
   const [dragId, setDragId] = useState<string | null>(null);
   /** Local order while dragging (and between reloads). */
   const [orderIds, setOrderIds] = useState<string[]>(() =>
@@ -67,6 +82,19 @@ export function ScreensTab({
   const renameInputRef = useRef<HTMLInputElement>(null);
   const armTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const swapInput = useRef<HTMLInputElement>(null);
+  const overlayRef = useRef<OverlayEditorHandle>(null);
+  const moreRef = useRef<HTMLDivElement>(null);
+  const [editMode, setEditMode] = useState<"overlay" | "frame">(() => {
+    try {
+      const v = localStorage.getItem("lss.screensEditMode");
+      return v === "frame" ? "frame" : "overlay";
+    } catch {
+      return "overlay";
+    }
+  });
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [onion, setOnion] = useState(false);
+  const history = useCommandHistory();
   const dragMoved = useRef(false);
   const orderIdsRef = useRef(orderIds);
   orderIdsRef.current = orderIds;
@@ -134,14 +162,72 @@ export function ScreensTab({
     }
   }, [selected?.id, config.presetIds, variantPresetId, selected]);
 
-  // Cancel inline rename when switching screens.
+  useEffect(() => {
+    if (!jumpTo) return;
+    const ids = selected
+      ? getScreenPresetIds(selected, config.presetIds)
+      : [];
+    if (jumpTo.presetId && ids.includes(jumpTo.presetId)) {
+      setVariantPresetId(jumpTo.presetId);
+    }
+    setEditMode("frame");
+    onJumpApplied?.();
+  }, [jumpTo]);
+
+  // Cancel inline rename / overflow when switching screens.
   useEffect(() => {
     setRenaming(false);
-  }, [selected?.id]);
+    setMoreOpen(false);
+    setArmDelete(false);
+    setArmRemoveVariant(false);
+    setOnion(false);
+    history.clear();
+  }, [selected?.id, variantPresetId]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("lss.screensEditMode", editMode);
+    } catch {
+      /* ignore */
+    }
+  }, [editMode]);
+
+  useEffect(() => {
+    if (!moreOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!moreRef.current?.contains(e.target as Node)) setMoreOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [moreOpen]);
 
   useEffect(() => {
     if (renaming) renameInputRef.current?.focus();
   }, [renaming]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (isTextEditingTarget(e.target)) return;
+      const key = e.key.toLowerCase();
+      if (key === "z" && e.shiftKey) {
+        e.preventDefault();
+        history.redo();
+        return;
+      }
+      if (key === "z") {
+        e.preventDefault();
+        history.undo();
+        return;
+      }
+      if (key === "y") {
+        e.preventDefault();
+        history.redo();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [history]);
 
   const availableToAdd = useMemo(() => {
     if (!selected) return presets;
@@ -305,15 +391,10 @@ export function ScreensTab({
 
   const swap = async (file?: File) => {
     if (!file || !selected) return;
-    setBusy(detectTextOnSwap ? "Analyzing screenshot" : "Swapping image");
+    setBusy("Swapping image");
     try {
       const dataUrl = await readFileAsDataUrl(file);
-      await api.replaceSource(
-        selected.id,
-        dataUrl,
-        detectTextOnSwap,
-        variantPresetId,
-      );
+      await api.replaceSource(selected.id, dataUrl, variantPresetId);
       await reload();
     } finally {
       setBusy(null);
@@ -362,13 +443,12 @@ export function ScreensTab({
     }
   };
 
-  const addVariant = async () => {
-    if (!selected || !addPreset) return;
+  const addVariant = async (presetId: string) => {
+    if (!selected || !presetId) return;
     setBusy("Adding device");
     try {
-      await api.addScreenVariant(selected.id, { presetId: addPreset });
-      setVariantPresetId(addPreset);
-      setAddPreset("");
+      await api.addScreenVariant(selected.id, { presetId });
+      setVariantPresetId(presetId);
       await reload();
     } finally {
       setBusy(null);
@@ -393,14 +473,21 @@ export function ScreensTab({
     ? Boolean(getOverlay(selected, variantPresetId))
     : false;
 
-  const screenMeta = (screenId: string) => {
+  const shortPresetLabel = (id: string) => {
+    const p = presets.find((x) => x.id === id);
+    if (!p) return id;
+    if (p.id === "ipad-13-landscape") return 'iPad 13" LS';
+    if (p.id === "ipad-13") return 'iPad 13"';
+    if (p.id === "mac") return "Mac";
+    return p.label;
+  };
+
+  const screenDeviceTitle = (screenId: string) => {
     const s = overlayScreens.find((x) => x.id === screenId);
-    if (!s) return "";
+    if (!s) return "No devices";
     const ids = getScreenPresetIds(s, config.presetIds);
-    const missing = ids.filter((id) => !getOverlay(s, id)).length;
-    if (!ids.length) return "no devices";
-    if (missing) return `${ids.length - missing}/${ids.length} devices`;
-    return `${ids.length} device${ids.length === 1 ? "" : "s"}`;
+    if (!ids.length) return "No devices";
+    return ids.map(shortPresetLabel).join(" + ");
   };
 
   return (
@@ -437,10 +524,10 @@ export function ScreensTab({
                 onPointerUp={onScreenPointerUp}
                 onPointerCancel={onScreenPointerUp}
               >
-                <span className="screens-sidebar-name">{s.name}</span>
-                <span className={`screens-sidebar-meta${incomplete ? " warn" : ""}`}>
-                  {screenMeta(s.id)}
+                <span className={`screens-sidebar-name${incomplete ? " warn" : ""}`}>
+                  {screenDeviceTitle(s.id)}
                 </span>
+                <span className="screens-sidebar-meta">{s.name}</span>
               </button>
             );
           })}
@@ -475,7 +562,26 @@ export function ScreensTab({
       </aside>
 
       <div className="screens-main">
-      <div className="toolbar">
+      <div className="toolbar screens-toolbar">
+        {selected && (
+          <div className="seg">
+            <button
+              type="button"
+              className={editMode === "overlay" ? "on" : ""}
+              onClick={() => setEditMode("overlay")}
+            >
+              Source
+            </button>
+            <button
+              type="button"
+              className={editMode === "frame" ? "on" : ""}
+              onClick={() => setEditMode("frame")}
+            >
+              Frame
+            </button>
+          </div>
+        )}
+
         {selected && variantIds.length > 0 && (
           <div className="variant-tabs seg">
             {variantIds.map((id) => (
@@ -489,35 +595,30 @@ export function ScreensTab({
                 {!getOverlay(selected, id) && " ○"}
               </button>
             ))}
+            {availableToAdd.length > 0 && (
+              <select
+                className="variant-add"
+                value=""
+                aria-label="Add device"
+                disabled={!!busy}
+                onChange={(e) => {
+                  const id = e.target.value;
+                  if (id) void addVariant(id);
+                }}
+              >
+                <option value="">+</option>
+                {availableToAdd.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
         )}
 
-        {selected && availableToAdd.length > 0 && (
-          <div className="row" style={{ gap: 6 }}>
-            <select
-              value={addPreset}
-              onChange={(e) => setAddPreset(e.target.value)}
-              style={{ maxWidth: 140 }}
-            >
-              <option value="">+ device…</option>
-              {availableToAdd.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.label}
-                </option>
-              ))}
-            </select>
-            <button
-              className="ghost mini"
-              disabled={!addPreset || !!busy}
-              onClick={() => void addVariant()}
-            >
-              Add
-            </button>
-          </div>
-        )}
-
-        <div className="field inline">
-          <label>Preview</label>
+        <label className="screens-locale">
+          <span>Preview</span>
           <select
             value={previewLocale}
             onChange={(e) => onPreviewLocale(e.target.value)}
@@ -528,100 +629,153 @@ export function ScreensTab({
               </option>
             ))}
           </select>
-        </div>
+        </label>
 
-        {selected && (
-          <>
-            {renaming ? (
-              <div className="row" style={{ gap: 6 }}>
-                <input
-                  ref={renameInputRef}
-                  value={renameDraft}
-                  onChange={(e) => setRenameDraft(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") void commitRename();
-                    if (e.key === "Escape") cancelRename();
-                  }}
-                  disabled={!!busy}
-                  style={{ width: 160 }}
-                  aria-label="New screen name"
-                />
+        {selected && renaming && (
+          <div className="row" style={{ gap: 6 }}>
+            <input
+              ref={renameInputRef}
+              value={renameDraft}
+              onChange={(e) => setRenameDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void commitRename();
+                if (e.key === "Escape") cancelRename();
+              }}
+              disabled={!!busy}
+              style={{ width: 160 }}
+              aria-label="New screen name"
+            />
+            <button
+              className="primary mini"
+              disabled={!!busy || !renameDraft.trim()}
+              onClick={() => void commitRename()}
+            >
+              Save
+            </button>
+            <button
+              className="ghost mini"
+              disabled={!!busy}
+              onClick={cancelRename}
+            >
+              Cancel
+            </button>
+          </div>
+        )}
+
+        {selected && !renaming && (
+          <div className="screens-more" ref={moreRef}>
+            <button
+              type="button"
+              className="ghost"
+              aria-haspopup="menu"
+              aria-expanded={moreOpen}
+              aria-label="More screen actions"
+              disabled={!!busy}
+              onClick={() => setMoreOpen((v) => !v)}
+            >
+              •••
+            </button>
+            {moreOpen && (
+              <div className="screens-more-menu" role="menu">
                 <button
-                  className="primary mini"
-                  disabled={!!busy || !renameDraft.trim()}
-                  onClick={() => void commitRename()}
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setMoreOpen(false);
+                    startRename();
+                  }}
                 >
-                  Save
+                  Rename
                 </button>
                 <button
-                  className="ghost mini"
-                  disabled={!!busy}
-                  onClick={cancelRename}
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setMoreOpen(false);
+                    swapInput.current?.click();
+                  }}
                 >
-                  Cancel
+                  Swap image
+                </button>
+                {editMode === "overlay" && variantHasOverlay && (
+                  <>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setMoreOpen(false);
+                        void (async () => {
+                          setBusy("Detecting text");
+                          try {
+                            await overlayRef.current?.detectText();
+                          } finally {
+                            setBusy(null);
+                          }
+                        })();
+                      }}
+                    >
+                      Detect text
+                    </button>
+                    <div className="screens-more-sep" />
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className={onion ? "is-on" : ""}
+                      onClick={() => setOnion((v) => !v)}
+                    >
+                      {onion ? "Onion skin on" : "Onion skin"}
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setMoreOpen(false);
+                        void overlayRef.current?.rebuildPlate();
+                      }}
+                    >
+                      Rebuild plate
+                    </button>
+                  </>
+                )}
+                <div className="screens-more-sep" />
+                {variantIds.length > 1 && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="danger"
+                    onClick={() => {
+                      if (armRemoveVariant) {
+                        setMoreOpen(false);
+                        void removeVariant();
+                      } else {
+                        setArmRemoveVariant(true);
+                        setTimeout(() => setArmRemoveVariant(false), 4000);
+                      }
+                    }}
+                  >
+                    {armRemoveVariant
+                      ? "Confirm remove device"
+                      : "Remove device"}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="danger"
+                  onClick={() => {
+                    if (armDelete) {
+                      setMoreOpen(false);
+                      void remove();
+                    } else {
+                      armDeleteOnce();
+                    }
+                  }}
+                >
+                  {armDelete ? "Confirm delete" : "Delete screen"}
                 </button>
               </div>
-            ) : (
-              <button
-                className="ghost"
-                onClick={startRename}
-                disabled={!!busy}
-              >
-                Rename
-              </button>
             )}
-            <button
-              className="ghost"
-              onClick={() => {
-                swapInput.current?.click();
-              }}
-              disabled={!!busy}
-            >
-              Swap image
-            </button>
-            <label
-              className="row"
-              style={{ gap: 6, alignItems: "center" }}
-              title="When swapping or attaching an image, run OCR and replace text slots"
-            >
-              <input
-                type="checkbox"
-                checked={detectTextOnSwap}
-                onChange={(e) => setDetectTextOnSwap(e.target.checked)}
-                disabled={!!busy}
-              />
-              <span className="hint">Detect text</span>
-            </label>
-            {variantIds.length > 1 && (
-              <button
-                className="ghost danger"
-                onClick={() => {
-                  if (armRemoveVariant) {
-                    void removeVariant();
-                  } else {
-                    setArmRemoveVariant(true);
-                    setTimeout(() => setArmRemoveVariant(false), 4000);
-                  }
-                }}
-                disabled={!!busy}
-              >
-                {armRemoveVariant ? "Confirm remove device" : "Remove device"}
-              </button>
-            )}
-            <button
-              className="danger"
-              onClick={() => {
-                if (armDelete) {
-                  void remove();
-                } else {
-                  armDeleteOnce();
-                }
-              }}
-              disabled={!!busy}
-            >
-              {armDelete ? "Confirm delete" : "Delete screen"}
-            </button>
-          </>
+          </div>
         )}
 
         <input
@@ -637,11 +791,12 @@ export function ScreensTab({
 
       <div className="unified-screens-body">
         {selected ? (
-          variantHasOverlay ? (
-            <>
-              <div className="unified-overlay-pane">
+          editMode === "overlay" ? (
+            variantHasOverlay ? (
+              <div className="unified-overlay-pane solo">
                 <OverlayEditor
                   key={`${selected.id}-${variantPresetId}`}
+                  ref={overlayRef}
                   screen={selected}
                   presets={presets}
                   summary={summary}
@@ -649,33 +804,21 @@ export function ScreensTab({
                   variantPresetId={variantPresetId}
                   hideDevicePicker
                   embedded
+                  onion={onion}
+                  onOnionChange={setOnion}
+                  history={history}
+                  palette={palette}
                   onChanged={() => reload().catch(() => {})}
                   previewLocale={previewLocale}
                   onPreviewLocale={onPreviewLocale}
                 />
               </div>
-              <div className="unified-compose-pane">
-                <CompositionPanel
-                  screen={selected}
-                  config={config}
-                  summary={summary}
-                  presets={presets}
-                  variantPresetId={variantPresetId}
-                  previewLocale={previewLocale}
-                  onPreviewLocale={onPreviewLocale}
-                  onChanged={() => reload().catch(() => {})}
-                  hasOverlay={variantHasOverlay}
-                />
-              </div>
-            </>
-          ) : (
-            <div className="unified-empty-split">
+            ) : (
               <div className="empty-state">
                 <h2>{presetLabel(variantPresetId)} needs a screenshot</h2>
                 <p>
-                  This device variant has composition settings but no image yet.
-                  Upload a screenshot for this device size. Use Detect text in
-                  the toolbar if you want OCR slots created automatically.
+                  Upload a screenshot for this device size. After it lands,
+                  Detect text in ••• can create slots from the image.
                 </p>
                 <button
                   className="primary"
@@ -687,19 +830,21 @@ export function ScreensTab({
                   {busy ? `${busy}…` : "Upload screenshot"}
                 </button>
               </div>
-              <div className="unified-compose-pane solo">
-                <CompositionPanel
-                  screen={selected}
-                  config={config}
-                  summary={summary}
-                  presets={presets}
-                  variantPresetId={variantPresetId}
-                  previewLocale={previewLocale}
-                  onPreviewLocale={onPreviewLocale}
-                  onChanged={() => reload().catch(() => {})}
-                  hasOverlay={false}
-                />
-              </div>
+            )
+          ) : (
+            <div className="unified-compose-pane solo">
+              <CompositionPanel
+                screen={selected}
+                config={config}
+                summary={summary}
+                presets={presets}
+                variantPresetId={variantPresetId}
+                previewLocale={previewLocale}
+                onPreviewLocale={onPreviewLocale}
+                onChanged={() => reload().catch(() => {})}
+                hasOverlay={variantHasOverlay}
+                history={history}
+              />
             </div>
           )
         ) : (

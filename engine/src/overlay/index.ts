@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { store } from "../store.js";
 import { PRESETS } from "../capture/presets.js";
@@ -343,11 +344,10 @@ export async function updateOverlayScreen(
   return store.getScreen(screenId)!;
 }
 
-/** Replace a variant's source screenshot or attach the first one. */
+/** Replace a variant's source screenshot or attach the first one. Never runs OCR. */
 export async function replaceOverlaySource(
   screenId: string,
   imageDataUrl: string | undefined,
-  reocr: boolean,
   presetId?: string,
   imagePath?: string,
 ): Promise<ScreenTemplate> {
@@ -407,13 +407,7 @@ export async function replaceOverlaySource(
   overlay.plateWidth = W;
   overlay.plateHeight = H;
 
-  // OCR only when explicitly requested — never the default for upload/swap.
-  if (reocr) {
-    const ocr = await detectText(sourceAbs);
-    overlay.slots = await buildSlots(buffer, ocr, sourceLocale, W, H);
-  } else if (!hadOverlay) {
-    overlay.slots = [];
-  }
+  if (!hadOverlay) overlay.slots = [];
 
   const plateAbs = path.join(paths.dataDir, overlay.platePath);
   await buildPlate(sourceAbs, overlay.slots, plateAbs);
@@ -428,6 +422,40 @@ export async function replaceOverlaySource(
     );
   }
   return store.getScreen(screenId)!;
+}
+
+/** Run OCR on the current source and replace slots. Does not change the image. */
+export async function detectOverlayText(
+  screenId: string,
+  presetId?: string,
+): Promise<OverlayResult> {
+  let screen = store.getScreen(screenId);
+  if (!screen) throw new Error(`Unknown screen: ${screenId}`);
+  const pid = presetId ?? primaryPresetId(screen);
+  const overlay = getOverlay(screen, pid);
+  if (!overlay) throw new Error(`No overlay for ${screenId}/${pid}`);
+  const paths = store.getPaths();
+  const sourceAbs = path.join(paths.dataDir, overlay.sourceImagePath);
+  if (!fs.existsSync(sourceAbs)) throw new Error("Source image not found");
+  const buffer = fs.readFileSync(sourceAbs);
+  const ocr = await detectText(sourceAbs);
+  overlay.slots = await buildSlots(
+    buffer,
+    ocr,
+    overlay.sourceLocale,
+    overlay.plateWidth,
+    overlay.plateHeight,
+  );
+  await buildPlate(sourceAbs, overlay.slots, path.join(paths.dataDir, overlay.platePath));
+  screen = setVariantOverlay(screen, pid, overlay);
+  screen.updatedAt = new Date().toISOString();
+  store.upsertScreen(screen);
+  return {
+    screen: store.getScreen(screenId)!,
+    ocrEngine: ocr.engine,
+    detectedCount: ocr.lines.length,
+    matchedCount: overlay.slots.filter((s) => s.linkedKey).length,
+  };
 }
 
 /** Force a rebuild of the clean plate from the current slots. */
@@ -468,6 +496,94 @@ export async function sampleSlotColors(
   };
   const background = await sampleBackgroundColor(sourceAbs, boxPx, W, H);
   return { background, textColor: contrastTextColor(background) };
+}
+
+export interface RegionAnalysis {
+  detectedText?: string;
+  linkedKey?: string;
+  confidence?: number;
+  background: string;
+  textColor: string;
+  fontFamily: string;
+  fontWeight: number;
+  fontSizePct: number;
+  ocrEngine: OcrResult["engine"] | "none";
+}
+
+function boxesOverlap(
+  a: { x: number; y: number; w: number; h: number },
+  b: { x: number; y: number; w: number; h: number },
+): boolean {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+/** OCR a dragged box, match a string, and sample mask + type colors. */
+export async function analyzeRegion(
+  screenId: string,
+  boxNorm: { x: number; y: number; w: number; h: number },
+  presetId?: string,
+): Promise<RegionAnalysis> {
+  const screen = store.getScreen(screenId);
+  if (!screen) throw new Error(`Unknown screen: ${screenId}`);
+  const pid = presetId ?? primaryPresetId(screen);
+  const overlay = getOverlay(screen, pid);
+  if (!overlay) throw new Error(`No overlay for ${screenId}/${pid}`);
+  const { plateWidth: W, plateHeight: H, sourceImagePath } = overlay;
+  const sourceAbs = path.join(store.getPaths().dataDir, sourceImagePath);
+  const boxPx = {
+    x: boxNorm.x * W,
+    y: boxNorm.y * H,
+    w: boxNorm.w * W,
+    h: boxNorm.h * H,
+  };
+
+  const padX = Math.max(2, Math.round(boxPx.w * 0.06));
+  const padY = Math.max(2, Math.round(boxPx.h * 0.12));
+  const left = Math.max(0, Math.floor(boxPx.x - padX));
+  const top = Math.max(0, Math.floor(boxPx.y - padY));
+  const width = Math.max(1, Math.min(W - left, Math.ceil(boxPx.w + padX * 2)));
+  const height = Math.max(1, Math.min(H - top, Math.ceil(boxPx.h + padY * 2)));
+
+  const sharp = (await import("sharp")).default;
+  const tmp = path.join(os.tmpdir(), `lss-region-${Date.now()}.png`);
+  await sharp(sourceAbs).extract({ left, top, width, height }).png().toFile(tmp);
+  let ocr: OcrResult;
+  try {
+    ocr = await detectText(tmp);
+  } finally {
+    try {
+      fs.rmSync(tmp);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  if (!ocr.lines.length) {
+    const full = await detectText(sourceAbs);
+    ocr = {
+      engine: full.engine,
+      lines: full.lines.filter((line) => boxesOverlap(line, boxNorm)),
+    };
+  }
+
+  const detectedText = ocr.lines.map((l) => l.text).join(" ").trim();
+  const match = detectedText
+    ? matchText(detectedText, overlay.sourceLocale)
+    : { score: 0, method: "none" as const };
+  const background = await sampleBackgroundColor(sourceAbs, boxPx, W, H);
+  const sibling = overlay.slots[0]?.type;
+
+  return {
+    detectedText: detectedText || undefined,
+    linkedKey: match.key,
+    confidence: match.key ? match.score : ocr.lines[0]?.confidence,
+    background,
+    textColor: contrastTextColor(background),
+    fontFamily: sibling?.fontFamily ?? defaultFontFamily(),
+    fontWeight: sibling?.fontWeight ?? 600,
+    fontSizePct: boxNorm.h * 0.82,
+    ocrEngine: ocr.engine,
+  };
 }
 
 /** Absolute path to a variant's source or plate image. */

@@ -12,7 +12,7 @@ import { OverviewTab } from "./tabs/OverviewTab";
 import { ProjectTab, type RecentProjectItem } from "./tabs/ProjectTab";
 import { StringsTab } from "./tabs/StringsTab";
 import { ScreensTab } from "./tabs/ScreensTab";
-import { GenerateTab } from "./tabs/GenerateTab";
+import { GenerateTab, type GenerateEditTarget } from "./tabs/GenerateTab";
 import { UploadTab } from "./tabs/UploadTab";
 import { pickXcodeProject } from "./pickProject";
 
@@ -66,6 +66,9 @@ export function App() {
   // Preview language shared across Strings/Screens/Compositions so a string can
   // be followed from edit → screen → composed without re-picking it each tab.
   const [previewLocale, setPreviewLocale] = useState<string>("");
+  const [screensJump, setScreensJump] = useState<GenerateEditTarget | null>(
+    null,
+  );
 
   const config = project?.open ? project.config : undefined;
 
@@ -453,6 +456,8 @@ export function App() {
             onSelect={setSelectedScreenId}
             previewLocale={previewLocale}
             onPreviewLocale={setPreviewLocale}
+            jumpTo={screensJump}
+            onJumpApplied={() => setScreensJump(null)}
           />
         )}
 
@@ -462,6 +467,12 @@ export function App() {
             summary={summary}
             presets={presets}
             reload={reload}
+            onEdit={(target) => {
+              setSelectedScreenId(target.screenId);
+              setPreviewLocale(target.locale);
+              setScreensJump(target);
+              setTab("Screens");
+            }}
           />
         )}
 

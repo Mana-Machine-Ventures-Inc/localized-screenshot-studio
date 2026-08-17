@@ -1,32 +1,18 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { clamp, normalizeHex, parseHex, toHex } from "../color";
+import type { ColorSwatchGroup } from "../projectColors";
+import { hasSampleableSurface, sampleDisplayAt, warmSampleCache } from "../sampleDisplay";
 
 interface Props {
   value: string;
   onChange: (hex: string) => void;
   /** optional label rendered next to the swatch trigger */
   title?: string;
-}
-
-// --- color math -----------------------------------------------------------
-
-function clamp(n: number, lo: number, hi: number): number {
-  return Math.max(lo, Math.min(hi, n));
-}
-
-function parseHex(hex: string): { r: number; g: number; b: number } | null {
-  let h = hex.trim().replace(/^#/, "");
-  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
-  if (!/^[0-9a-fA-F]{6}$/.test(h)) return null;
-  return {
-    r: parseInt(h.slice(0, 2), 16),
-    g: parseInt(h.slice(2, 4), 16),
-    b: parseInt(h.slice(4, 6), 16),
-  };
-}
-
-function toHex(r: number, g: number, b: number): string {
-  const h = (n: number) => clamp(Math.round(n), 0, 255).toString(16).padStart(2, "0");
-  return `#${h(r)}${h(g)}${h(b)}`;
+  /** End a coalesced undo gesture (color drag / slider). */
+  onGestureEnd?: () => void;
+  /** Deduped project colors, grouped by role. */
+  palette?: ColorSwatchGroup[];
 }
 
 function rgbToHsv(r: number, g: number, b: number) {
@@ -78,15 +64,20 @@ function hslToHsv(h: number, s: number, l: number) {
   return { h, s: sv, v };
 }
 
-export function ColorPicker({ value, onChange, title }: Props) {
+export function ColorPicker({ value, onChange, title, onGestureEnd, palette }: Props) {
   const [open, setOpen] = useState(false);
   const [hsv, setHsv] = useState(() => {
     const rgb = parseHex(value) ?? { r: 255, g: 255, b: 255 };
     return rgbToHsv(rgb.r, rgb.g, rgb.b);
   });
   const [hexText, setHexText] = useState(value);
+  const [hover, setHover] = useState<{ hex: string; x: number; y: number } | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const slRef = useRef<HTMLDivElement>(null);
+  const endRef = useRef(onGestureEnd);
+  endRef.current = onGestureEnd;
+  const changeRef = useRef(onChange);
+  changeRef.current = onChange;
 
   // Sync from the controlled prop when it changes externally (not from our edits).
   useEffect(() => {
@@ -102,19 +93,70 @@ export function ColorPicker({ value, onChange, title }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value]);
 
-  // Close on outside click.
+  // Sample on-screen Source / Frame images while the popover is open.
   useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+    if (!open) {
+      setHover(null);
+      document.body.classList.remove("cp-sampling");
+      return;
+    }
+    document.body.classList.add("cp-sampling");
+    warmSampleCache();
+
+    const onMove = (e: PointerEvent) => {
+      if (rootRef.current?.contains(e.target as Node)) {
+        setHover(null);
+        return;
+      }
+      const hex = sampleDisplayAt(e.clientX, e.clientY);
+      if (hex) {
+        setHover({ hex, x: e.clientX, y: e.clientY });
+        return;
+      }
+      if (hasSampleableSurface(e.clientX, e.clientY)) {
+        const x = e.clientX;
+        const y = e.clientY;
+        requestAnimationFrame(() => {
+          const again = sampleDisplayAt(x, y);
+          if (again) setHover({ hex: again, x, y });
+        });
+        return;
+      }
+      setHover(null);
     };
-    window.addEventListener("mousedown", onDown);
-    return () => window.removeEventListener("mousedown", onDown);
+    const onDown = (e: PointerEvent) => {
+      if (rootRef.current?.contains(e.target as Node)) return;
+      const hex = sampleDisplayAt(e.clientX, e.clientY);
+      if (hex) {
+        e.preventDefault();
+        e.stopPropagation();
+        const rgb = parseHex(hex);
+        if (rgb) {
+          const next = rgbToHsv(rgb.r, rgb.g, rgb.b);
+          setHsv(next);
+          setHexText(hex);
+          changeRef.current(hex);
+          endRef.current?.();
+        }
+        return;
+      }
+      setOpen(false);
+      endRef.current?.();
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerdown", onDown, true);
+    return () => {
+      document.body.classList.remove("cp-sampling");
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerdown", onDown, true);
+    };
   }, [open]);
 
   const { r, g, b } = hsvToRgb(hsv.h, hsv.s, hsv.v);
   const hex = toHex(r, g, b);
   const hsl = hsvToHsl(hsv.h, hsv.s, hsv.v);
+  const current = normalizeHex(hex);
 
   const commit = (next: { h: number; s: number; v: number }) => {
     setHsv(next);
@@ -139,6 +181,7 @@ export function ColorPicker({ value, onChange, title }: Props) {
     const onUp = () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
+      onGestureEnd?.();
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
@@ -155,12 +198,18 @@ export function ColorPicker({ value, onChange, title }: Props) {
     if (rgb) commit(rgbToHsv(rgb.r, rgb.g, rgb.b));
   };
 
+  const pickSwatch = (swatch: string) => {
+    applyHexText(swatch);
+    onGestureEnd?.();
+  };
+
   const pickScreen = async () => {
     const Eye = (window as unknown as { EyeDropper?: new () => { open: () => Promise<{ sRGBHex: string }> } }).EyeDropper;
     if (!Eye) return;
     try {
       const res = await new Eye().open();
       applyHexText(res.sRGBHex);
+      onGestureEnd?.();
     } catch {
       /* user cancelled */
     }
@@ -171,6 +220,13 @@ export function ColorPicker({ value, onChange, title }: Props) {
     const c = hsvToRgb(hsv.h, 1, 1);
     return toHex(c.r, c.g, c.b);
   })();
+
+  const loupeStyle = hover
+    ? {
+        left: Math.min(hover.x + 16, window.innerWidth - 120),
+        top: Math.min(hover.y + 16, window.innerHeight - 40),
+      }
+    : undefined;
 
   return (
     <div className="cp" ref={rootRef}>
@@ -205,6 +261,7 @@ export function ColorPicker({ value, onChange, title }: Props) {
             max={360}
             value={Math.round(hsv.h)}
             onChange={(e) => commit({ ...hsv, h: Number(e.target.value) })}
+            onPointerUp={() => onGestureEnd?.()}
           />
           <div className="cp-fields">
             <label>
@@ -215,6 +272,7 @@ export function ColorPicker({ value, onChange, title }: Props) {
                 max={360}
                 value={hsl.h}
                 onChange={(e) => setHsl({ h: Number(e.target.value) })}
+                onBlur={() => onGestureEnd?.()}
               />
             </label>
             <label>
@@ -225,6 +283,7 @@ export function ColorPicker({ value, onChange, title }: Props) {
                 max={100}
                 value={hsl.s}
                 onChange={(e) => setHsl({ s: Number(e.target.value) })}
+                onBlur={() => onGestureEnd?.()}
               />
             </label>
             <label>
@@ -235,6 +294,7 @@ export function ColorPicker({ value, onChange, title }: Props) {
                 max={100}
                 value={hsl.l}
                 onChange={(e) => setHsl({ l: Number(e.target.value) })}
+                onBlur={() => onGestureEnd?.()}
               />
             </label>
           </div>
@@ -244,7 +304,10 @@ export function ColorPicker({ value, onChange, title }: Props) {
               value={hexText}
               spellCheck={false}
               onChange={(e) => applyHexText(e.target.value)}
-              onBlur={() => setHexText(hex)}
+              onBlur={() => {
+                setHexText(hex);
+                onGestureEnd?.();
+              }}
             />
             {hasEyeDropper && (
               <button
@@ -261,8 +324,44 @@ export function ColorPicker({ value, onChange, title }: Props) {
               </button>
             )}
           </div>
+          {palette && palette.length > 0 && (
+            <div className="cp-palette">
+              {palette.map((group) => (
+                <div key={group.label} className="cp-palette-group">
+                  <div className="cp-palette-label">{group.label}</div>
+                  <div className="cp-palette-list">
+                    {group.colors.map((c) => (
+                      <button
+                        key={c.hex}
+                        type="button"
+                        className={`cp-palette-row${current === c.hex ? " on" : ""}`}
+                        title={c.hex.toUpperCase()}
+                        onClick={() => pickSwatch(c.hex)}
+                      >
+                        <span
+                          className="cp-palette-swatch"
+                          style={{ background: c.hex }}
+                        />
+                        <span className="cp-palette-name">{c.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          <p className="cp-sample-hint">Hover the screenshot to sample</p>
         </div>
       )}
+      {open &&
+        hover &&
+        createPortal(
+          <div className="cp-loupe" style={loupeStyle}>
+            <span className="cp-loupe-swatch" style={{ background: hover.hex }} />
+            {hover.hex.toUpperCase()}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

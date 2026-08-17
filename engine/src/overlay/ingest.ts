@@ -11,6 +11,7 @@ import type { ScreenComposition, ScreenTemplate } from "../types.js";
 import {
   addScreenVariant,
   createOverlayScreen,
+  detectOverlayText,
   replaceOverlaySource,
 } from "./index.js";
 import { sampleFrameTheme, type FrameTheme } from "./themeColor.js";
@@ -386,10 +387,12 @@ async function ingestOne(
     screen = await replaceOverlaySource(
       existingId,
       sourcePath ? undefined : spec.imageDataUrl,
-      Boolean(opts.detectText),
       presetId,
       sourcePath,
     );
+    if (opts.detectText) {
+      screen = (await detectOverlayText(existingId, presetId)).screen;
+    }
     screen = applyComposition(screen, presetId, theme, headlineKey);
     return {
       sourcePath,

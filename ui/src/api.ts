@@ -204,14 +204,20 @@ export const api = {
   replaceSource: (
     screenId: string,
     imageDataUrl: string,
-    reocr: boolean,
     presetId?: string,
   ) =>
     req<{ screen: ScreenTemplate }>(
       "POST",
       `/api/overlay/screens/${screenId}/source`,
-      { imageDataUrl, reocr, presetId },
+      { imageDataUrl, presetId },
     ),
+  detectOverlayText: (screenId: string, presetId?: string) =>
+    req<{
+      screen: ScreenTemplate;
+      ocrEngine: string;
+      detectedCount: number;
+      matchedCount: number;
+    }>("POST", `/api/overlay/screens/${screenId}/detect-text`, { presetId }),
   setHeadline: (screenId: string, locale: string, value: string) =>
     req<ScreenTemplate>("POST", `/api/screens/${screenId}/headline`, {
       locale,
@@ -303,12 +309,33 @@ export const api = {
       `/api/overlay/screens/${screenId}/sample`,
       { box, presetId },
     ),
+  analyzeRegion: (
+    screenId: string,
+    box: { x: number; y: number; w: number; h: number },
+    presetId?: string,
+  ) =>
+    req<{
+      detectedText?: string;
+      linkedKey?: string;
+      confidence?: number;
+      background: string;
+      textColor: string;
+      fontFamily: string;
+      fontWeight: number;
+      fontSizePct: number;
+      ocrEngine: string;
+    }>("POST", `/api/overlay/screens/${screenId}/analyze-region`, {
+      box,
+      presetId,
+    }),
   capture: (sel: CellSelector) =>
     req<{ cells: AssetCell[] }>("POST", "/api/capture", sel),
   compose: (sel: CellSelector) =>
     req<{ cells: AssetCell[] }>("POST", "/api/compose", sel),
   clearCells: (sel: CellSelector) =>
     req<{ cleared: number }>("POST", "/api/cells/clear", sel),
+  reveal: (input: { kind: "all" | "cell"; cellId?: string }) =>
+    req<{ ok: boolean }>("POST", "/api/reveal", input),
   approve: (cellId: string) =>
     req<AssetCell>("POST", `/api/cells/${cellId}/approve`),
   ascStatus: () =>

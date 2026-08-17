@@ -1,8 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { api, overlayImageUrl, type ProjectFont } from "../api";
 import { getOverlay } from "../screens/variants";
 import { FontPicker } from "./FontPicker";
 import { ColorPicker } from "./ColorPicker";
+import type { ColorSwatchGroup } from "../projectColors";
 import type {
   DevicePreset,
   ProjectSummary,
@@ -11,6 +19,12 @@ import type {
   SlotVAlign,
   TextSlot,
 } from "../types";
+import type { CommandHistory } from "../history";
+
+export type OverlayEditorHandle = {
+  rebuildPlate: () => Promise<void>;
+  detectText: () => Promise<void>;
+};
 
 interface Props {
   screen: ScreenTemplate;
@@ -28,6 +42,10 @@ interface Props {
   /** shared preview language (persists across tabs). */
   previewLocale?: string;
   onPreviewLocale?: (locale: string) => void;
+  onion?: boolean;
+  onOnionChange?: (next: boolean) => void;
+  history?: CommandHistory;
+  palette?: ColorSwatchGroup[];
 }
 
 type Handle = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
@@ -91,19 +109,27 @@ function resizeBox(
   return { x, y, w, h };
 }
 
-export function OverlayEditor({
-  screen,
-  presets,
-  summary,
-  initialPreset,
-  onChanged,
-  embedded,
-  onClose,
-  previewLocale: previewLocaleProp,
-  onPreviewLocale,
-  variantPresetId,
-  hideDevicePicker,
-}: Props) {
+export const OverlayEditor = forwardRef<OverlayEditorHandle, Props>(
+  function OverlayEditor(
+    {
+      screen,
+      presets,
+      summary,
+      initialPreset,
+      onChanged,
+      embedded,
+      onClose,
+      previewLocale: previewLocaleProp,
+      onPreviewLocale,
+      variantPresetId,
+      hideDevicePicker,
+      onion: onionProp,
+      onOnionChange,
+      history,
+      palette,
+    },
+    ref,
+  ) {
   const activePreset =
     variantPresetId ?? screen.presetIds[0] ?? initialPreset;
   const overlay = getOverlay(screen, activePreset)!;
@@ -122,11 +148,18 @@ export function OverlayEditor({
   const [localPreviewLocale, setLocalPreviewLocale] = useState(sourceLocale);
   const previewLocale = previewLocaleProp || localPreviewLocale;
   const [presetId, setPresetId] = useState(activePreset);
+  const analyzingRef = useRef(false);
   useEffect(() => {
     setPresetId(activePreset);
+    if (analyzingRef.current) return;
     setSlots(getOverlay(screen, activePreset)?.slots ?? []);
   }, [screen.id, activePreset, screen]);
-  const [onion, setOnion] = useState(false);
+  const [localOnion, setLocalOnion] = useState(false);
+  const onion = onionProp ?? localOnion;
+  const setOnion = (next: boolean) => {
+    if (onOnionChange) onOnionChange(next);
+    else setLocalOnion(next);
+  };
   const [eyedropper, setEyedropper] = useState(false);
   const [plateBust, setPlateBust] = useState(Date.now());
   const [saving, setSaving] = useState(false);
@@ -155,11 +188,13 @@ export function OverlayEditor({
   const stageRef = useRef<HTMLDivElement>(null);
   const [box, setBox] = useState({ w: 0, h: 0 });
   const dragRef = useRef<DragOp | null>(null);
+  const dragStartSlots = useRef<TextSlot[] | null>(null);
   const marqueeRef = useRef<{
     x0: number;
     y0: number;
     additive: boolean;
     base: string[];
+    box?: { x: number; y: number; w: number; h: number };
   } | null>(null);
   const slotsRef = useRef<TextSlot[]>(slots);
   slotsRef.current = slots;
@@ -219,6 +254,26 @@ export function OverlayEditor({
     saveTimer.current = setTimeout(() => void save(next), 650);
   };
 
+  const recordSlots = (
+    prev: TextSlot[],
+    next: TextSlot[],
+    coalesceKey?: string,
+  ) => {
+    history?.push(
+      {
+        undo: () => {
+          setSlots(prev);
+          scheduleSave(prev);
+        },
+        redo: () => {
+          setSlots(next);
+          scheduleSave(next);
+        },
+      },
+      coalesceKey,
+    );
+  };
+
   const save = async (next?: TextSlot[]) => {
     setSaving(true);
     try {
@@ -236,26 +291,37 @@ export function OverlayEditor({
     setSlots((prev) => {
       const next = prev.map((s) => (s.id === id ? { ...s, ...patch } : s));
       scheduleSave(next);
+      recordSlots(prev, next);
       return next;
     });
   };
 
-  const patchType = (id: string, patch: Partial<TextSlot["type"]>) => {
+  const patchType = (
+    id: string,
+    patch: Partial<TextSlot["type"]>,
+    coalesceKey?: string,
+  ) => {
     setSlots((prev) => {
       const next = prev.map((s) =>
         s.id === id ? { ...s, type: { ...s.type, ...patch } } : s,
       );
       scheduleSave(next);
+      recordSlots(prev, next, coalesceKey);
       return next;
     });
   };
 
-  const patchMask = (id: string, patch: Partial<TextSlot["mask"]>) => {
+  const patchMask = (
+    id: string,
+    patch: Partial<TextSlot["mask"]>,
+    coalesceKey?: string,
+  ) => {
     setSlots((prev) => {
       const next = prev.map((s) =>
         s.id === id ? { ...s, mask: { ...s.mask, ...patch } } : s,
       );
       scheduleSave(next);
+      recordSlots(prev, next, coalesceKey);
       return next;
     });
   };
@@ -287,6 +353,7 @@ export function OverlayEditor({
     setSlots((prev) => {
       const next = prev.filter((s) => !drop.has(s.id));
       scheduleSave(next);
+      recordSlots(prev, next);
       return next;
     });
     setSelectedIds((prev) => prev.filter((id) => !drop.has(id)));
@@ -329,6 +396,7 @@ export function OverlayEditor({
     }
     const starts: Record<string, TextSlot["box"]> = {};
     for (const s of slots) if (moveIds.includes(s.id)) starts[s.id] = { ...s.box };
+    dragStartSlots.current = slots;
     dragRef.current = { type: "move", startX: e.clientX, startY: e.clientY, starts };
     window.addEventListener("pointermove", onPointerMove);
     window.addEventListener("pointerup", onPointerUp);
@@ -340,6 +408,7 @@ export function OverlayEditor({
     setSelectedIds([id]);
     const slot = slots.find((s) => s.id === id);
     if (!slot) return;
+    dragStartSlots.current = slots;
     dragRef.current = {
       type: "resize",
       id,
@@ -388,14 +457,17 @@ export function OverlayEditor({
     window.removeEventListener("pointerup", onPointerUp);
     if (dragRef.current) {
       dragRef.current = null;
+      const before = dragStartSlots.current;
+      dragStartSlots.current = null;
       setSlots((prev) => {
         scheduleSave(prev);
+        if (before) recordSlots(before, prev);
         return prev;
       });
     }
   };
 
-  // --- marquee selection on empty canvas ----------------------------------
+  // --- drag a box to add a slot (shift/⌘ still marquees a selection) ------
   const onStagePointerDown = (e: React.PointerEvent) => {
     const rect = stageRef.current?.getBoundingClientRect();
     if (!rect) return;
@@ -432,6 +504,13 @@ export function OverlayEditor({
     const ny0 = (minY - rect.top) / rect.height;
     const nx1 = (maxX - rect.left) / rect.width;
     const ny1 = (maxY - rect.top) / rect.height;
+    m.box = {
+      x: nx0,
+      y: ny0,
+      w: Math.max(0, nx1 - nx0),
+      h: Math.max(0, ny1 - ny0),
+    };
+    if (!m.additive) return;
     const hits = slotsRef.current
       .filter(
         (s) =>
@@ -441,14 +520,20 @@ export function OverlayEditor({
           s.box.y + s.box.h > ny0,
       )
       .map((s) => s.id);
-    setSelectedIds(m.additive ? Array.from(new Set([...m.base, ...hits])) : hits);
+    setSelectedIds(Array.from(new Set([...m.base, ...hits])));
   };
 
   const onMarqueeUp = () => {
+    const m = marqueeRef.current;
+    const box = m?.box;
+    const additive = m?.additive;
     window.removeEventListener("pointermove", onMarqueeMove);
     window.removeEventListener("pointerup", onMarqueeUp);
     marqueeRef.current = null;
     setMarquee(null);
+    if (additive) return;
+    if (!box || box.w < 0.012 || box.h < 0.008) return;
+    void addSlotAt(box);
   };
 
   // --- eyedropper: sample a pixel from the original source image ----------
@@ -499,6 +584,88 @@ export function OverlayEditor({
     }
   };
 
+  const addSlotAt = async (box: TextSlot["box"]) => {
+    const id = `slot-${Date.now().toString(36)}`;
+    const newSlot: TextSlot = {
+      id,
+      box,
+      literal: "New text",
+      detectedText: "New text",
+      mask: { mode: "none", color: "#ffffff", padding: 0.004, radius: 4 },
+      type: {
+        fontFamily: `-apple-system, system-ui, sans-serif`,
+        fontWeight: 600,
+        fontSizePct: Math.max(0.012, box.h * 0.82),
+        color: "#ffffff",
+        align: "left",
+        valign: "middle",
+        lineHeight: 1.1,
+        letterSpacing: 0,
+        autoFit: "shrink",
+        maxLines: 1,
+      },
+    };
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
+    const beforeAdd = slotsRef.current;
+    analyzingRef.current = true;
+    setSlots([...beforeAdd, newSlot]);
+    setSelectedIds([id]);
+    setInfo("Detecting text…");
+    try {
+      const analysis = await api.analyzeRegion(screen.id, box, activePreset);
+      const found = Boolean(analysis.detectedText);
+      const patched: TextSlot = {
+        ...newSlot,
+        linkedKey: analysis.linkedKey,
+        literal: analysis.linkedKey
+          ? undefined
+          : (analysis.detectedText ?? newSlot.literal),
+        detectedText: analysis.detectedText ?? newSlot.detectedText,
+        confidence: analysis.confidence,
+        mask: {
+          ...newSlot.mask,
+          mode: found ? "solid" : newSlot.mask.mode,
+          color: analysis.background,
+          radius: Math.max(2, Math.round(box.h * overlay.plateHeight * 0.12)),
+        },
+        type: {
+          ...newSlot.type,
+          fontFamily: analysis.fontFamily,
+          fontWeight: analysis.fontWeight,
+          fontSizePct: analysis.fontSizePct,
+          color: analysis.textColor,
+        },
+      };
+      const live = slotsRef.current.some((s) => s.id === id)
+        ? slotsRef.current
+        : [...beforeAdd, newSlot];
+      const next = live.map((s) => (s.id === id ? patched : s));
+      setSlots(next);
+      recordSlots(beforeAdd, next);
+      await save(next);
+      setInfo(
+        analysis.detectedText
+          ? analysis.linkedKey
+            ? `Matched ${analysis.linkedKey}`
+            : `Detected “${analysis.detectedText}”`
+          : undefined,
+      );
+    } catch (err) {
+      setInfo(String(err instanceof Error ? err.message : err));
+      const kept = slotsRef.current.some((s) => s.id === id)
+        ? slotsRef.current
+        : [...beforeAdd, newSlot];
+      setSlots(kept);
+      scheduleSave(kept);
+      recordSlots(beforeAdd, kept);
+    } finally {
+      analyzingRef.current = false;
+    }
+  };
+
   const addSlot = async () => {
     const id = `slot-${Date.now().toString(36)}`;
     const box = { x: 0.3, y: 0.45, w: 0.4, h: 0.06 };
@@ -521,6 +688,7 @@ export function OverlayEditor({
         maxLines: 1,
       },
     };
+    const beforeAdd = slots;
     setSlots((prev) => [...prev, newSlot]);
     setSelectedIds([id]);
     // Sample the real background so the new slot is legible by default.
@@ -541,6 +709,7 @@ export function OverlayEditor({
           : s,
       );
       scheduleSave(next);
+      recordSlots(beforeAdd, next);
       return next;
     });
   };
@@ -564,6 +733,7 @@ export function OverlayEditor({
             : s,
         );
         scheduleSave(next);
+        recordSlots(prev, next);
         return next;
       });
     } catch (e) {
@@ -584,13 +754,56 @@ export function OverlayEditor({
     setPlateBust(Date.now());
   };
 
+  const detectTextNow = async () => {
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
+    const prev = slotsRef.current;
+    const res = await api.detectOverlayText(screen.id, activePreset);
+    const next = getOverlay(res.screen, activePreset)?.slots ?? [];
+    setSlots(next);
+    setSelectedIds(next[0] ? [next[0].id] : []);
+    setPlateBust(Date.now());
+    history?.push({
+      undo: () => {
+        setSlots(prev);
+        scheduleSave(prev);
+      },
+      redo: () => {
+        setSlots(next);
+        scheduleSave(next);
+      },
+    });
+    onChanged();
+  };
+
+  const rebuildRef = useRef(rebuild);
+  rebuildRef.current = rebuild;
+  const detectRef = useRef(detectTextNow);
+  detectRef.current = detectTextNow;
+  useImperativeHandle(
+    ref,
+    () => ({
+      rebuildPlate: () => rebuildRef.current(),
+      detectText: () => detectRef.current(),
+    }),
+    [],
+  );
+
   const selected =
     selectedIds.length === 1
       ? slots.find((s) => s.id === selectedIds[0])
       : undefined;
+  const showRail = slots.length > 0;
 
   return (
-    <div className={embedded ? "overlay-embed" : "editor-overlay"}>
+    <div
+      className={
+        embedded ? "overlay-embed no-chrome" : "editor-overlay"
+      }
+    >
+      {!embedded && (
       <div className="editor-header">
         <div className="row" style={{ gap: 10, alignItems: "center" }}>
           <b>{screen.name}</b>
@@ -627,7 +840,7 @@ export function OverlayEditor({
           )}
           <button
             className={onion ? "primary" : "ghost"}
-            onClick={() => setOnion((v) => !v)}
+            onClick={() => setOnion(!onion)}
           >
             Onion skin
           </button>
@@ -641,8 +854,11 @@ export function OverlayEditor({
           )}
         </div>
       </div>
+      )}
 
-      <div className="editor-body overlay-body">
+      <div
+        className={`editor-body overlay-body${showRail ? "" : " is-wide"}`}
+      >
         {/* Canvas */}
         <div className="overlay-canvas" ref={canvasRef}>
           <div
@@ -656,6 +872,7 @@ export function OverlayEditor({
                 src={overlayImageUrl(screen.id, "plate", activePreset, plateBust)}
                 alt="plate"
                 draggable={false}
+                crossOrigin="anonymous"
               />
               {onion && (
                 <img
@@ -663,6 +880,7 @@ export function OverlayEditor({
                   src={overlayImageUrl(screen.id, "source", activePreset, plateBust)}
                   alt="source"
                   draggable={false}
+                  crossOrigin="anonymous"
                 />
               )}
               {slots.map((s) => {
@@ -735,9 +953,27 @@ export function OverlayEditor({
               <div className="overlay-eyedropper" onPointerDown={pickColorAt} />
             )}
           </div>
+          {embedded && (saving || info) && (
+            <div className="overlay-status">
+              {saving && <span className="hint">saving…</span>}
+              {info && <span className="error-text">{info}</span>}
+            </div>
+          )}
+          {!showRail && (
+            <div className="overlay-empty-hint">
+              <span>Drag a box on the screenshot to add text</span>
+              <button
+                type="button"
+                className="ghost mini"
+                onClick={() => void addSlot()}
+              >
+                + Add slot
+              </button>
+            </div>
+          )}
         </div>
 
-        {/* Right rail */}
+        {showRail && (
         <div className="overlay-rail">
           <div className="row" style={{ justifyContent: "space-between" }}>
             <div className="section-title" style={{ margin: 0 }}>
@@ -771,9 +1007,6 @@ export function OverlayEditor({
                 </span>
               </div>
             ))}
-            {!slots.length && (
-              <div className="hint">No text detected. Add a slot manually.</div>
-            )}
           </div>
 
           {selectedIds.length > 1 && (
@@ -858,10 +1091,13 @@ export function OverlayEditor({
                   step={0.001}
                   value={selected.type.fontSizePct}
                   onChange={(e) =>
-                    patchType(selected.id, {
-                      fontSizePct: Number(e.target.value),
-                    })
+                    patchType(
+                      selected.id,
+                      { fontSizePct: Number(e.target.value) },
+                      `slot-size-${selected.id}`,
+                    )
                   }
+                  onPointerUp={() => history?.endGesture()}
                 />
               </div>
 
@@ -870,7 +1106,11 @@ export function OverlayEditor({
                   <label>Color</label>
                   <ColorPicker
                     value={selected.type.color}
-                    onChange={(hex) => patchType(selected.id, { color: hex })}
+                    onChange={(hex) =>
+                      patchType(selected.id, { color: hex }, `slot-color-${selected.id}`)
+                    }
+                    onGestureEnd={() => history?.endGesture()}
+                    palette={palette}
                   />
                 </div>
                 <div className="field" style={{ flex: 1 }}>
@@ -967,7 +1207,15 @@ export function OverlayEditor({
                   <label>Fill</label>
                   <ColorPicker
                     value={selected.mask.color}
-                    onChange={(hex) => patchMask(selected.id, { color: hex })}
+                    onChange={(hex) =>
+                      patchMask(
+                        selected.id,
+                        { color: hex },
+                        `slot-mask-${selected.id}`,
+                      )
+                    }
+                    onGestureEnd={() => history?.endGesture()}
+                    palette={palette}
                   />
                 </div>
                 <div className="field" style={{ flex: 1 }}>
@@ -1008,7 +1256,9 @@ export function OverlayEditor({
             </div>
           )}
         </div>
+        )}
       </div>
     </div>
   );
-}
+  },
+);

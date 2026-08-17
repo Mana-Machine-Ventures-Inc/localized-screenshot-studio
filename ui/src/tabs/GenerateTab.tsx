@@ -9,19 +9,50 @@ import type {
   ScreenTemplate,
 } from "../types";
 
+export interface GenerateEditTarget {
+  screenId: string;
+  locale: string;
+  presetId: string;
+}
+
 interface Props {
   config: ProjectConfig;
   summary: ProjectSummary;
   presets: DevicePreset[];
   reload: () => Promise<void>;
+  onEdit?: (target: GenerateEditTarget) => void;
 }
 
 const THUMB_H = 232;
+
+function formatBuildDate(iso?: string): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return `${d.getMonth() + 1}/${d.getDate()}`;
+}
+
+function FinderIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path
+        d="M2.5 5A1.5 1.5 0 0 1 4 3.5h2.2L7.5 5H12A1.5 1.5 0 0 1 13.5 6.5v6A1.5 1.5 0 0 1 12 14H4A1.5 1.5 0 0 1 2.5 12.5v-7.5Z"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
 
 interface WorkItem {
   screenId: string;
   locale: string;
   pid: string;
+}
+
+function cellWorkId(item: WorkItem): string {
+  return `${item.screenId}__${item.locale}__${item.pid}`;
 }
 
 interface ActiveJob {
@@ -31,17 +62,28 @@ interface ActiveJob {
   done: number;
   /** Cell id currently being captured/composed. */
   workingId?: string;
+  /** Cells queued or in flight — show a shield over their thumbs. */
+  pendingIds: string[];
   stopping?: boolean;
   error?: string;
 }
 
-export function GenerateTab({ config, summary, presets, reload }: Props) {
+export function GenerateTab({
+  config,
+  summary,
+  presets,
+  reload,
+  onEdit,
+}: Props) {
   const locales = summary.locales;
   const screens = config.screens;
   const presetOf = (id: string) => presets.find((p) => p.id === id);
 
   const [active, setActive] = useState<ActiveJob | null>(null);
-  const [lightbox, setLightbox] = useState<string | null>(null);
+  const [lightbox, setLightbox] = useState<{
+    src: string;
+    cellId: string;
+  } | null>(null);
   const [genError, setGenError] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<{
     sel: CellSelector;
@@ -52,6 +94,8 @@ export function GenerateTab({ config, summary, presets, reload }: Props) {
   const [cellOverrides, setCellOverrides] = useState<Record<string, AssetCell>>(
     {},
   );
+  const [cellMenu, setCellMenu] = useState<string | null>(null);
+  const cellMenuRef = useRef<HTMLDivElement>(null);
   const cancelRef = useRef(false);
   const aliveRef = useRef(true);
 
@@ -79,18 +123,28 @@ export function GenerateTab({ config, summary, presets, reload }: Props) {
     });
   }, [config.cells]);
 
-  // Close the lightbox / confirm dialog on Escape.
+  // Close the lightbox / confirm dialog / cell menu on Escape.
   useEffect(() => {
-    if (!lightbox && !pendingDelete) return;
+    if (!lightbox && !pendingDelete && !cellMenu) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         setLightbox(null);
         setPendingDelete(null);
+        setCellMenu(null);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [lightbox, pendingDelete]);
+  }, [lightbox, pendingDelete, cellMenu]);
+
+  useEffect(() => {
+    if (!cellMenu) return;
+    const onDown = (e: MouseEvent) => {
+      if (!cellMenuRef.current?.contains(e.target as Node)) setCellMenu(null);
+    };
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
+  }, [cellMenu]);
 
   // Leaving the tab cancels any in-flight generation.
   useEffect(() => {
@@ -134,12 +188,17 @@ export function GenerateTab({ config, summary, presets, reload }: Props) {
     if (active || !work.length) return;
     cancelRef.current = false;
     setGenError(null);
-    setActive({ scope, total: work.length, done: 0 });
+    setActive({
+      scope,
+      total: work.length,
+      done: 0,
+      pendingIds: work.map(cellWorkId),
+    });
     try {
       for (let i = 0; i < work.length; i++) {
         if (cancelRef.current) break;
         const w = work[i];
-        const workingId = `${w.screenId}__${w.locale}__${w.pid}`;
+        const workingId = cellWorkId(w);
         setActive((a) => (a ? { ...a, workingId } : a));
         const sel = {
           screenId: w.screenId,
@@ -151,7 +210,14 @@ export function GenerateTab({ config, summary, presets, reload }: Props) {
         if (!aliveRef.current) return;
         mergeCells(cells);
         setActive((a) =>
-          a ? { ...a, done: i + 1, workingId: undefined } : a,
+          a
+            ? {
+                ...a,
+                done: i + 1,
+                workingId: undefined,
+                pendingIds: a.pendingIds.filter((id) => id !== workingId),
+              }
+            : a,
         );
       }
     } catch (e) {
@@ -170,14 +236,22 @@ export function GenerateTab({ config, summary, presets, reload }: Props) {
 
   const stop = () => {
     cancelRef.current = true;
-    setActive((a) => (a ? { ...a, stopping: true } : a));
+    setActive((a) =>
+      a
+        ? {
+            ...a,
+            stopping: true,
+            pendingIds: a.workingId ? [a.workingId] : [],
+          }
+        : a,
+    );
   };
 
   const generateAll = () => void runCells(workForScreens(screens), "all");
   const generateScreen = (screen: ScreenTemplate) =>
     void runCells(workForScreens([screen]), screen.id);
   const regenerateCell = (item: WorkItem) =>
-    void runCells([item], `cell:${item.screenId}__${item.locale}__${item.pid}`);
+    void runCells([item], `cell:${cellWorkId(item)}`);
 
   // --- delete generated artifacts ----------------------------------------
   const isGenerated = (c: AssetCell) =>
@@ -197,6 +271,13 @@ export function GenerateTab({ config, summary, presets, reload }: Props) {
     allDisplayCells().filter(
       (c) => c.screenId === sid && c.presetId === pid && isGenerated(c),
     ).length;
+  const reveal = async (input: { kind: "all" | "cell"; cellId?: string }) => {
+    try {
+      await api.reveal(input);
+    } catch (e) {
+      setGenError(String(e instanceof Error ? e.message : e));
+    }
+  };
 
   // Open an in-app confirmation. We can't use window.confirm(): it's a no-op in
   // the Tauri (WKWebView) window, which silently skipped every delete.
@@ -218,7 +299,7 @@ export function GenerateTab({ config, summary, presets, reload }: Props) {
   // and the tile flips back to a regenerate button.
   const clearCell = async (item: WorkItem) => {
     if (active) return;
-    const id = `${item.screenId}__${item.locale}__${item.pid}`;
+    const id = cellWorkId(item);
     await api.clearCells({
       screenId: item.screenId,
       locales: [item.locale],
@@ -276,6 +357,14 @@ export function GenerateTab({ config, summary, presets, reload }: Props) {
           renderProgress(active)
         ) : (
           <>
+            <button
+              className="ghost"
+              disabled={!countAll}
+              title="Open the composed folder in Finder"
+              onClick={() => void reveal({ kind: "all" })}
+            >
+              <FinderIcon /> Reveal all
+            </button>
             <button
               className="ghost danger"
               disabled={!!active || !countAll}
@@ -384,6 +473,11 @@ export function GenerateTab({ config, summary, presets, reload }: Props) {
                               ? imageUrl(cell.capturePath, bust)
                               : undefined;
                           const inFlight = active?.workingId === id;
+                          const pending = Boolean(active?.pendingIds.includes(id));
+                          const built =
+                            src && !pending
+                              ? formatBuildDate(cell?.updatedAt)
+                              : null;
                           return (
                             <div
                               className="gen-cell"
@@ -392,10 +486,22 @@ export function GenerateTab({ config, summary, presets, reload }: Props) {
                               title={`${screen.name} · ${locale}`}
                             >
                               <div
-                                className={`gen-thumb ${src ? "clickable" : ""}`}
+                                className={`gen-thumb${src && !pending ? " clickable" : ""}${pending ? " is-pending" : ""}`}
                                 style={{ width: thumbW, height: THUMB_H }}
-                                onClick={() => src && setLightbox(src)}
-                                title={src ? "Click to view full size" : undefined}
+                                onClick={() =>
+                                  src &&
+                                  !pending &&
+                                  setLightbox({ src, cellId: id })
+                                }
+                                title={
+                                  pending
+                                    ? inFlight
+                                      ? "Generating…"
+                                      : "Queued"
+                                    : src
+                                      ? "Click to view full size"
+                                      : undefined
+                                }
                               >
                                 {src ? (
                                   <img
@@ -403,49 +509,116 @@ export function GenerateTab({ config, summary, presets, reload }: Props) {
                                     alt={`${screen.name} ${locale}`}
                                   />
                                 ) : (
-                                  <div className="gen-empty">
-                                    {inFlight ? "…" : "not generated"}
+                                  !pending && (
+                                    <div className="gen-empty">not generated</div>
+                                  )
+                                )}
+                                {pending && (
+                                  <div
+                                    className={`gen-shield${inFlight ? " is-working" : ""}`}
+                                  >
+                                    {inFlight && <span className="gen-shield-spin" />}
+                                    <span>
+                                      {inFlight ? "Generating…" : "Pending"}
+                                    </span>
                                   </div>
                                 )}
                               </div>
                               <div className="gen-cell-foot">
-                                <span className="locale-tag">{locale}</span>
-                                <span
-                                  className={`slot-badge ${cell?.state === "composed" ? "ok" : cell ? "" : "warn"}`}
-                                >
-                                  {cell?.state ?? "—"}
+                                <span className="gen-cell-meta">
+                                  {locale}
+                                  {built ? ` • ${built}` : ""}
                                 </span>
-                                {src ? (
+                                <div
+                                  className="gen-cell-more"
+                                  ref={cellMenu === id ? cellMenuRef : undefined}
+                                >
                                   <button
-                                    className="mini danger"
-                                    disabled={!!active}
-                                    title="Delete this screenshot (then regenerate)"
-                                    onClick={() =>
-                                      void clearCell({
-                                        screenId: screen.id,
-                                        locale,
-                                        pid,
-                                      })
-                                    }
+                                    type="button"
+                                    className="gen-cell-more-btn"
+                                    aria-haspopup="menu"
+                                    aria-expanded={cellMenu === id}
+                                    aria-label={`Actions for ${locale}`}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setCellMenu((v) => (v === id ? null : id));
+                                    }}
                                   >
-                                    🗑
+                                    •••
                                   </button>
-                                ) : (
-                                  <button
-                                    className="mini"
-                                    disabled={!!active}
-                                    title="Generate this screenshot"
-                                    onClick={() =>
-                                      regenerateCell({
-                                        screenId: screen.id,
-                                        locale,
-                                        pid,
-                                      })
-                                    }
-                                  >
-                                    {inFlight ? "…" : "↻"}
-                                  </button>
-                                )}
+                                  {cellMenu === id && (
+                                    <div className="gen-cell-more-menu" role="menu">
+                                      {onEdit && (
+                                        <button
+                                          type="button"
+                                          role="menuitem"
+                                          onClick={() => {
+                                            setCellMenu(null);
+                                            onEdit({
+                                              screenId: screen.id,
+                                              locale,
+                                              presetId: pid,
+                                            });
+                                          }}
+                                        >
+                                          Edit
+                                        </button>
+                                      )}
+                                      {src && (
+                                        <button
+                                          type="button"
+                                          role="menuitem"
+                                          onClick={() => {
+                                            setCellMenu(null);
+                                            void reveal({
+                                              kind: "cell",
+                                              cellId: id,
+                                            });
+                                          }}
+                                        >
+                                          Reveal in Finder
+                                        </button>
+                                      )}
+                                      <button
+                                        type="button"
+                                        role="menuitem"
+                                        disabled={!!active}
+                                        onClick={() => {
+                                          setCellMenu(null);
+                                          regenerateCell({
+                                            screenId: screen.id,
+                                            locale,
+                                            pid,
+                                          });
+                                        }}
+                                      >
+                                        {inFlight
+                                          ? "Generating…"
+                                          : src
+                                            ? "Regenerate"
+                                            : "Generate"}
+                                      </button>
+                                      {src && (
+                                        <button
+                                          type="button"
+                                          role="menuitem"
+                                          className="danger"
+                                          disabled={!!active}
+                                          onClick={() => {
+                                            setCellMenu(null);
+                                            void clearCell({
+                                              screenId: screen.id,
+                                              locale,
+                                              pid,
+                                            });
+                                          }}
+                                        >
+                                          Delete
+                                        </button>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
                               </div>
                             </div>
                           );
@@ -469,8 +642,19 @@ export function GenerateTab({ config, summary, presets, reload }: Props) {
           >
             ✕
           </button>
+          <button
+            type="button"
+            className="lightbox-reveal"
+            title="Reveal this image in Finder"
+            onClick={(e) => {
+              e.stopPropagation();
+              void reveal({ kind: "cell", cellId: lightbox.cellId });
+            }}
+          >
+            <FinderIcon /> Reveal in Finder
+          </button>
           <img
-            src={lightbox}
+            src={lightbox.src}
             alt="full size"
             onClick={(e) => e.stopPropagation()}
           />

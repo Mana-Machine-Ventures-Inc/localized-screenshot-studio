@@ -14,13 +14,16 @@ import {
   rebuildPlate,
   overlayImagePath,
   sampleSlotColors,
+  analyzeRegion,
   replaceOverlaySource,
+  detectOverlayText,
   duplicateScreen,
   addScreenVariant,
   removeScreenVariant,
 } from "./overlay/index.js";
 import { ingestScreens } from "./overlay/ingest.js";
 import { sampleFrameTheme } from "./overlay/themeColor.js";
+import { openFolder, revealPaths } from "./reveal.js";
 import {
   primaryPresetId,
   setVariantComposition,
@@ -369,18 +372,25 @@ export function createServer() {
   app.post(
     "/api/overlay/screens/:id/source",
     asyncRoute(async (req, res) => {
-      const { imageDataUrl, reocr, presetId } = req.body as {
+      const { imageDataUrl, presetId } = req.body as {
         imageDataUrl: string;
-        reocr?: boolean;
         presetId?: string;
       };
       const screen = await replaceOverlaySource(
         req.params.id,
         imageDataUrl,
-        Boolean(reocr),
         presetId,
       );
       res.json({ screen });
+    }),
+  );
+
+  app.post(
+    "/api/overlay/screens/:id/detect-text",
+    asyncRoute(async (req, res) => {
+      const { presetId } = req.body as { presetId?: string };
+      const result = await detectOverlayText(req.params.id, presetId);
+      res.json(result);
     }),
   );
 
@@ -514,6 +524,17 @@ export function createServer() {
     }),
   );
 
+  app.post(
+    "/api/overlay/screens/:id/analyze-region",
+    asyncRoute(async (req, res) => {
+      const { box, presetId } = req.body as {
+        box: { x: number; y: number; w: number; h: number };
+        presetId?: string;
+      };
+      res.json(await analyzeRegion(req.params.id, box, presetId));
+    }),
+  );
+
   const sendOverlayImage = (which: "source" | "plate") =>
     asyncRoute(async (req, res) => {
       const presetId = req.query.preset as string | undefined;
@@ -619,6 +640,41 @@ export function createServer() {
         store.resetCell(cell.id);
       }
       res.json({ cleared: cells.length });
+    }),
+  );
+
+  // Reveal generated files in Finder: the whole composed set, or one image.
+  app.post(
+    "/api/reveal",
+    asyncRoute(async (req, res) => {
+      if (!store.isOpen()) throw new Error("No project is open");
+      const body = req.body as {
+        kind: "all" | "cell";
+        cellId?: string;
+      };
+      const cells = store.getConfig().cells;
+      if (body.kind === "all") {
+        const hasComposed = cells.some(
+          (c) => c.composedPath && fs.existsSync(c.composedPath),
+        );
+        const dir = hasComposed
+          ? store.getPaths().composedDir
+          : store.getPaths().capturesDir;
+        await openFolder(dir);
+        res.json({ ok: true });
+        return;
+      }
+      if (body.kind === "cell") {
+        if (!body.cellId) throw new Error("cellId required");
+        const cell = store.getCell(body.cellId);
+        if (!cell) throw new Error("Unknown cell");
+        const file = cell.composedPath ?? cell.capturePath;
+        if (!file) throw new Error("That screenshot has not been generated");
+        await revealPaths([file]);
+        res.json({ ok: true });
+        return;
+      }
+      throw new Error("Unknown reveal kind");
     }),
   );
 

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, renderUrl, type ProjectFont } from "../api";
+import { api, overlayImageUrl, renderUrl, type ProjectFont } from "../api";
 import { FontPicker } from "./FontPicker";
 import { ColorPicker } from "./ColorPicker";
+import { frameColorPalette } from "../projectColors";
 import { getComposition, getOverlay } from "../screens/variants";
 import type {
   CompositorConfig,
@@ -11,6 +12,7 @@ import type {
   ScreenComposition,
   ScreenTemplate,
 } from "../types";
+import type { CommandHistory } from "../history";
 
 interface Props {
   screen: ScreenTemplate;
@@ -22,6 +24,7 @@ interface Props {
   onPreviewLocale: (locale: string) => void;
   onChanged: () => void;
   hasOverlay: boolean;
+  history?: CommandHistory;
 }
 
 const DEVICE_CLASS_LABEL: Record<string, string> = {
@@ -40,11 +43,19 @@ export function CompositionPanel({
   onPreviewLocale,
   onChanged,
   hasOverlay,
+  history,
 }: Props) {
   const preset =
     presets.find((p) => p.id === variantPresetId) ?? presets[0];
   const deviceClass = preset?.platform ?? "ios";
   const deviceLabel = DEVICE_CLASS_LABEL[deviceClass] ?? deviceClass;
+
+  const palette = useMemo(() => frameColorPalette(config), [config]);
+
+  const plateSampleSrc = useMemo(
+    () => overlayImageUrl(screen.id, "plate", variantPresetId),
+    [screen.id, variantPresetId],
+  );
 
   const defaultComp = useMemo<ScreenComposition>(
     () => ({
@@ -150,35 +161,65 @@ export function CompositionPanel({
     }, 450);
   };
 
-  const update = (patch: Partial<ScreenComposition>) => {
+  const update = (patch: Partial<ScreenComposition>, coalesceKey?: string) => {
+    const prev = comp;
     const next = { ...comp, ...patch };
     setComp(next);
     persistComp(next);
+    history?.push(
+      {
+        undo: () => {
+          setComp(prev);
+          persistComp(prev);
+        },
+        redo: () => {
+          setComp(next);
+          persistComp(next);
+        },
+      },
+      coalesceKey,
+    );
   };
 
-  const updateBg = (patch: Record<string, unknown>) => {
+  const updateBg = (patch: Record<string, unknown>, coalesceKey?: string) => {
     const bg = { ...comp.background, ...patch } as ScreenComposition["background"];
-    update({ background: bg });
+    update({ background: bg }, coalesceKey);
   };
 
   const sampleTheme = async () => {
     setBusy("Sampling theme");
     try {
+      const prev = comp;
       const res = await api.applyScreenTheme(screen.id, variantPresetId);
-      setComp((prev) => ({
+      const next = {
         ...prev,
         background: res.theme.background,
         headlineColor: res.theme.headlineColor,
-      }));
+      };
+      setComp(next);
       onChanged();
+      history?.push({
+        undo: () => {
+          setComp(prev);
+          persistComp(prev);
+        },
+        redo: () => {
+          setComp(next);
+          persistComp(next);
+        },
+      });
     } finally {
       setBusy(null);
     }
   };
 
-  const updateUniversal = (patch: Partial<CompositorConfig>) => {
-    setTypo((prev) => ({ ...prev, ...patch }));
-    pendingUniversal.current = { ...pendingUniversal.current, ...patch };
+  const applyTypo = (next: CompositorConfig) => {
+    setTypo(next);
+    pendingUniversal.current = {
+      headlineFont: next.headlineFont,
+      headlineWeight: next.headlineWeight,
+      headlineStyle: next.headlineStyle,
+    };
     if (typoSaveTimer.current) clearTimeout(typoSaveTimer.current);
     typoSaveTimer.current = setTimeout(() => {
       const toSave = pendingUniversal.current;
@@ -190,6 +231,16 @@ export function CompositionPanel({
     }, 450);
   };
 
+  const updateUniversal = (patch: Partial<CompositorConfig>) => {
+    const prev = typo;
+    const next = { ...typo, ...patch };
+    applyTypo(next);
+    history?.push({
+      undo: () => applyTypo(prev),
+      redo: () => applyTypo(next),
+    });
+  };
+
   const sizePct =
     typo.perDevice?.[deviceClass]?.headlineSizePct ?? typo.headlineSizePct;
   const areaFraction =
@@ -197,17 +248,14 @@ export function CompositionPanel({
     comp.headlineHeightFraction ??
     typo.headlineHeightFraction;
 
-  const updateDevice = (patch: {
-    headlineSizePct?: number;
-    headlineHeightFraction?: number;
-  }) => {
-    setTypo((prev) => ({
-      ...prev,
-      perDevice: {
-        ...prev.perDevice,
-        [deviceClass]: { ...prev.perDevice?.[deviceClass], ...patch },
-      },
-    }));
+  const applyDevice = (
+    next: CompositorConfig,
+    patch: {
+      headlineSizePct?: number;
+      headlineHeightFraction?: number;
+    },
+  ) => {
+    setTypo(next);
     pendingDevice.current = { ...pendingDevice.current, ...patch };
     if (deviceSaveTimer.current) clearTimeout(deviceSaveTimer.current);
     deviceSaveTimer.current = setTimeout(() => {
@@ -220,6 +268,36 @@ export function CompositionPanel({
     }, 450);
   };
 
+  const updateDevice = (
+    patch: {
+      headlineSizePct?: number;
+      headlineHeightFraction?: number;
+    },
+    coalesceKey?: string,
+  ) => {
+    const prev = typo;
+    const next: CompositorConfig = {
+      ...typo,
+      perDevice: {
+        ...typo.perDevice,
+        [deviceClass]: { ...typo.perDevice?.[deviceClass], ...patch },
+      },
+    };
+    applyDevice(next, patch);
+    const undoPatch = {
+      headlineSizePct: prev.perDevice?.[deviceClass]?.headlineSizePct,
+      headlineHeightFraction:
+        prev.perDevice?.[deviceClass]?.headlineHeightFraction,
+    };
+    history?.push(
+      {
+        undo: () => applyDevice(prev, undoPatch),
+        redo: () => applyDevice(next, patch),
+      },
+      coalesceKey,
+    );
+  };
+
   const overlay = getOverlay(screen, variantPresetId);
   const isMac = preset?.platform === "macos";
   // Canvas is always the ASC preset size. Mac overlay HTML renders at plate
@@ -230,7 +308,12 @@ export function CompositionPanel({
     isMac && overlay ? Math.max(1, overlay.plateWidth) : canvasW;
   const iframeH =
     isMac && overlay ? Math.max(1, overlay.plateHeight) : canvasH;
-  const pxPerPoint = Math.min(wrap.w / canvasW, wrap.h / canvasH, 1);
+  // Fit the ASC canvas into the visible preview pane. Do not cap at 1 — iPad
+  // landscape is 1376×1032 points and overflows a 1:1 preview.
+  const pxPerPoint =
+    canvasW > 0 && canvasH > 0
+      ? Math.min(wrap.w / canvasW, wrap.h / canvasH)
+      : 0;
   const stageW = Math.max(0, canvasW * pxPerPoint);
   const stageH = Math.max(0, canvasH * pxPerPoint);
 
@@ -346,9 +429,20 @@ export function CompositionPanel({
   const resetComposition = async () => {
     setBusy("Resetting");
     try {
+      const prev = comp;
       await api.setComposition(screen.id, defaultComp, variantPresetId);
       setComp(defaultComp);
       onChanged();
+      history?.push({
+        undo: () => {
+          setComp(prev);
+          persistComp(prev);
+        },
+        redo: () => {
+          setComp(defaultComp);
+          persistComp(defaultComp);
+        },
+      });
     } finally {
       setBusy(null);
     }
@@ -438,7 +532,9 @@ export function CompositionPanel({
                 <label>Color</label>
                 <ColorPicker
                   value={comp.background.color}
-                  onChange={(hex) => updateBg({ color: hex })}
+                  onChange={(hex) => updateBg({ color: hex }, "bg-color")}
+                  onGestureEnd={() => history?.endGesture()}
+                  palette={palette}
                 />
               </div>
             ) : (
@@ -447,14 +543,18 @@ export function CompositionPanel({
                   <label>From</label>
                   <ColorPicker
                     value={comp.background.from}
-                    onChange={(hex) => updateBg({ from: hex })}
+                    onChange={(hex) => updateBg({ from: hex }, "bg-from")}
+                    onGestureEnd={() => history?.endGesture()}
+                    palette={palette}
                   />
                 </div>
                 <div className="field" style={{ flex: 1 }}>
                   <label>To</label>
                   <ColorPicker
                     value={comp.background.to}
-                    onChange={(hex) => updateBg({ to: hex })}
+                    onChange={(hex) => updateBg({ to: hex }, "bg-to")}
+                    onGestureEnd={() => history?.endGesture()}
+                    palette={palette}
                   />
                 </div>
               </div>
@@ -524,7 +624,9 @@ export function CompositionPanel({
           <label>Headline color</label>
           <ColorPicker
             value={comp.headlineColor}
-            onChange={(hex) => update({ headlineColor: hex })}
+            onChange={(hex) => update({ headlineColor: hex }, "headlineColor")}
+            onGestureEnd={() => history?.endGesture()}
+            palette={palette}
           />
         </div>
 
@@ -541,8 +643,12 @@ export function CompositionPanel({
             step={0.001}
             value={sizePct}
             onChange={(e) =>
-              updateDevice({ headlineSizePct: Number(e.target.value) })
+              updateDevice(
+                { headlineSizePct: Number(e.target.value) },
+                "headlineSize",
+              )
             }
+            onPointerUp={() => history?.endGesture()}
           />
         </div>
         <div className="field">
@@ -554,10 +660,12 @@ export function CompositionPanel({
             step={0.01}
             value={areaFraction}
             onChange={(e) =>
-              updateDevice({
-                headlineHeightFraction: Number(e.target.value),
-              })
+              updateDevice(
+                { headlineHeightFraction: Number(e.target.value) },
+                "headlineArea",
+              )
             }
+            onPointerUp={() => history?.endGesture()}
           />
         </div>
 
@@ -630,6 +738,7 @@ export function CompositionPanel({
             >
               <div
                 className="comp-screen-clip"
+                data-sample-src={plateSampleSrc}
                 style={{
                   borderRadius: innerRadius,
                   width: isMac && !isDevice ? "100%" : undefined,
@@ -647,6 +756,9 @@ export function CompositionPanel({
                   style={
                     isMac && !isDevice
                       ? {
+                          position: "absolute",
+                          top: 0,
+                          left: 0,
                           width: iframeW,
                           height: iframeH,
                           border: "none",
@@ -656,6 +768,9 @@ export function CompositionPanel({
                           transformOrigin: "top left",
                         }
                       : {
+                          position: "absolute",
+                          top: 0,
+                          left: 0,
                           width: iframeW,
                           height: iframeH,
                           border: "none",
