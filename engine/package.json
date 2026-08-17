@@ -2,6 +2,7 @@
   "name": "@lss/engine",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "Local engine: project reader, screenshot text-overlay renderer, Playwright rasterizer, frame compositor, and App Store Connect upload engine.",
   "main": "src/index.ts",

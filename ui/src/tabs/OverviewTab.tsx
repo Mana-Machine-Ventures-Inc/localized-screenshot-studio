@@ -13,9 +13,11 @@ interface Props {
   summary: ProjectSummary;
   presets: DevicePreset[];
   hasCreds: boolean;
+  hasOpenAI: boolean;
   reloadToken: number;
   onNavigate: (tab: string) => void;
   onEditCredentials: () => void;
+  onEditOpenAI: () => void;
 }
 
 interface NextStep {
@@ -29,9 +31,11 @@ export function OverviewTab({
   summary,
   presets,
   hasCreds,
+  hasOpenAI,
   reloadToken,
   onNavigate,
   onEditCredentials,
+  onEditOpenAI,
 }: Props) {
   const [strings, setStrings] = useState<StringEntry[]>([]);
   const baseLocale = summary.baseLocale;
@@ -96,6 +100,13 @@ export function OverviewTab({
     steps.push({
       label: `Add images to ${screensWithout} screen${screensWithout > 1 ? "s" : ""}`,
       action: () => onNavigate("Screens"),
+      tone: "do",
+    });
+  }
+  if (totalMissing > 0 && !hasOpenAI) {
+    steps.push({
+      label: "Add an OpenAI API key for AI translation",
+      action: onEditOpenAI,
       tone: "do",
     });
   }
@@ -238,6 +249,20 @@ export function OverviewTab({
             onClick={() => onNavigate("Project")}
           >
             Manage devices &amp; settings
+          </button>
+        </div>
+        <div className="card">
+          <div className="section-title" style={{ marginTop: 0 }}>
+            OpenAI
+          </div>
+          <div className="kv">
+            <span>API key</span>
+            <b style={{ color: hasOpenAI ? "var(--good)" : "var(--warn)" }}>
+              {hasOpenAI ? "configured" : "not set"}
+            </b>
+          </div>
+          <button className="ghost" style={{ marginTop: 10 }} onClick={onEditOpenAI}>
+            {hasOpenAI ? "Update API key" : "Add API key"}
           </button>
         </div>
         <div className="card">

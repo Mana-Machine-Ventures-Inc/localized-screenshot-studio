@@ -273,7 +273,7 @@ export interface CompositorConfig {
 export interface AscCredentials {
   issuerId: string;
   keyId: string;
-  /** PEM/p8 private key contents. Stored in OS keychain, never in project file. */
+  /** PEM/p8 private key contents. Stored under ~/.lss, never in project.json. */
   privateKey: string;
   appId: string;
   /** optional explicit appStoreVersion id; otherwise resolved by version string. */

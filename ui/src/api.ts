@@ -142,6 +142,10 @@ export const api = {
       "DELETE",
       `/api/screens/${screenId}`,
     ),
+  reorderScreens: (screenIds: string[]) =>
+    req<{ ok: boolean; config: ProjectConfig }>("PUT", "/api/screens/order", {
+      screenIds,
+    }),
   duplicateScreen: (
     screenId: string,
     opts: { presetIds?: string[]; name?: string } = {},
@@ -216,7 +220,8 @@ export const api = {
   createOverlay: (input: {
     name: string;
     sourceLocale?: string;
-    imageDataUrl: string;
+    imageDataUrl?: string;
+    imagePath?: string;
     presetId?: string;
     detectText?: boolean;
   }) =>
@@ -226,6 +231,48 @@ export const api = {
       detectedCount: number;
       matchedCount: number;
     }>("POST", "/api/overlay/screens", input),
+  ingestScreens: (input: {
+    dir?: string;
+    files?: {
+      path?: string;
+      imageDataUrl?: string;
+      name?: string;
+      headlineKey?: string;
+      presetId?: string;
+    }[];
+    sourceLocale?: string;
+    detectText?: boolean;
+    keyPrefix?: string;
+  }) =>
+    req<{
+      created: {
+        sourcePath?: string;
+        name: string;
+        headlineKey?: string;
+        headlineMatched: boolean;
+        mergedVariant: boolean;
+        theme: {
+          background: { type: "solid"; color: string };
+          headlineColor: string;
+          sampledColor: string;
+          saturation: number;
+        };
+        screen: ScreenTemplate;
+      }[];
+      failed: { sourcePath?: string; name: string; error: string }[];
+      config: ProjectConfig;
+      data: ProjectSummary;
+    }>("POST", "/api/screens/ingest", input),
+  applyScreenTheme: (screenId: string, presetId?: string) =>
+    req<{
+      theme: {
+        background: { type: "solid"; color: string };
+        headlineColor: string;
+        sampledColor: string;
+        saturation: number;
+      };
+      screen: ScreenTemplate;
+    }>("POST", `/api/screens/${screenId}/theme`, { presetId, apply: true }),
   updateOverlay: (
     screenId: string,
     input: {
@@ -280,6 +327,41 @@ export const api = {
     req<{ ok: boolean; ref: ProjectConfig["asc"] }>("PUT", "/api/asc/version", {
       versionString,
     }),
+  getGlobalSettings: () =>
+    req<{
+      lastProjectPath?: string;
+      recentProjects: {
+        path: string;
+        appName?: string;
+        openedAt: string;
+      }[];
+    }>("GET", "/api/settings"),
+  removeRecentProject: (path: string) =>
+    req<{ ok: boolean; recentProjects: { path: string; appName?: string; openedAt: string }[] }>(
+      "DELETE",
+      "/api/settings/recent",
+      { path },
+    ),
+  openaiStatus: () =>
+    req<{
+      configured: boolean;
+      source: "file" | "env" | null;
+      model?: string;
+    }>("GET", "/api/openai"),
+  saveOpenAI: (input: { apiKey: string; baseUrl?: string; model?: string }) =>
+    req<{
+      ok: boolean;
+      configured: boolean;
+      source: "file" | "env" | null;
+      model?: string;
+    }>("PUT", "/api/openai", input),
+  clearOpenAI: () =>
+    req<{
+      ok: boolean;
+      configured: boolean;
+      source: "file" | "env" | null;
+      model?: string;
+    }>("DELETE", "/api/openai"),
   upload: (opts: {
     kind: "screenshots" | "metadata" | "both";
     dryRun?: boolean;

@@ -1,4 +1,5 @@
 import { store } from "../store.js";
+import { resolveOpenAI } from "../openai/credentials.js";
 
 export interface LocalizeKeyResult {
   key: string;
@@ -45,14 +46,16 @@ export async function localizeKey(
   if (!baseValue.trim()) {
     return failAll(out, targetLocales, "No source value to translate");
   }
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    return failAll(out, targetLocales, "OPENAI_API_KEY is not set");
+  const api = resolveOpenAI();
+  if (!api) {
+    return failAll(
+      out,
+      targetLocales,
+      "OpenAI API key is not set — add it in Project settings",
+    );
   }
 
-  const baseUrl = process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1";
-  const model =
-    process.env.LSS_TRANSLATE_MODEL ?? process.env.LSS_GEN_MODEL ?? "gpt-4o-mini";
+  const { apiKey, baseUrl, model } = api;
   out.model = model;
 
   // Whole default-language index for glossary/terminology/tone context.

@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { resolveOpenAI } from "../openai/credentials.js";
 
 const execFileAsync = promisify(execFile);
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -59,10 +60,9 @@ async function appleVision(imagePath: string): Promise<OcrLine[] | null> {
 
 /** Fallback OCR via an OpenAI vision model. Geometry is approximate. */
 async function openaiVision(imagePath: string): Promise<OcrLine[] | null> {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return null;
-  const baseUrl = process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1";
-  const model = process.env.LSS_GEN_MODEL ?? "gpt-4o-mini";
+  const api = resolveOpenAI();
+  if (!api) return null;
+  const { apiKey, baseUrl, model } = api;
   const buf = fs.readFileSync(imagePath);
   const dataUrl = `data:image/png;base64,${buf.toString("base64")}`;
 

@@ -4,6 +4,7 @@ import type { DevicePreset, ProjectConfig, ProjectSummary } from "../types";
 import { OverlayEditor } from "../components/OverlayEditor";
 import { CompositionPanel } from "../components/CompositionPanel";
 import { OverlayUploadModal } from "../components/OverlayUploadModal";
+import { IngestFolderModal } from "../components/IngestFolderModal";
 import {
   getOverlay,
   getScreenPresetIds,
@@ -40,8 +41,17 @@ export function ScreensTab({
   previewLocale,
   onPreviewLocale,
 }: Props) {
-  const overlayScreens = config.screens.filter((s) => s.kind === "overlay");
+  const overlayScreens = useMemo(
+    () => config.screens.filter((s) => s.kind === "overlay"),
+    [config.screens],
+  );
+  const overlayIdsKey = useMemo(
+    () => overlayScreens.map((s) => s.id).join("\0"),
+    [overlayScreens],
+  );
   const [showUpload, setShowUpload] = useState(false);
+  const [showIngest, setShowIngest] = useState(false);
+  const [ingestReport, setIngestReport] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [armDelete, setArmDelete] = useState(false);
   const [armRemoveVariant, setArmRemoveVariant] = useState(false);
@@ -49,9 +59,60 @@ export function ScreensTab({
   const [renaming, setRenaming] = useState(false);
   const [renameDraft, setRenameDraft] = useState("");
   const [detectTextOnSwap, setDetectTextOnSwap] = useState(false);
+  const [dragId, setDragId] = useState<string | null>(null);
+  /** Local order while dragging (and between reloads). */
+  const [orderIds, setOrderIds] = useState<string[]>(() =>
+    overlayScreens.map((s) => s.id),
+  );
   const renameInputRef = useRef<HTMLInputElement>(null);
   const armTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const swapInput = useRef<HTMLInputElement>(null);
+  const dragMoved = useRef(false);
+  const orderIdsRef = useRef(orderIds);
+  orderIdsRef.current = orderIds;
+  const dragRef = useRef<{
+    id: string;
+    startY: number;
+    originIds: string[];
+  } | null>(null);
+
+  // Keep local order in sync with the project, preserving relative order when
+  // screens are added/removed. Skip while dragging so we don't fight the live order.
+  useEffect(() => {
+    if (dragRef.current) return;
+    const ids = overlayIdsKey ? overlayIdsKey.split("\0") : [];
+    setOrderIds((prev) => {
+      if (
+        prev.length === ids.length &&
+        prev.every((id, i) => id === ids[i])
+      ) {
+        return prev;
+      }
+      const idSet = new Set(ids);
+      const kept = prev.filter((id) => idSet.has(id));
+      if (kept.length === ids.length && kept.length === prev.length) {
+        // Same screens, different order — adopt server/config order.
+        return ids;
+      }
+      const keptSet = new Set(kept);
+      const added = ids.filter((id) => !keptSet.has(id));
+      return [...kept, ...added];
+    });
+  }, [overlayIdsKey]);
+
+  const screensById = useMemo(() => {
+    const m = new Map<string, (typeof overlayScreens)[number]>();
+    for (const s of overlayScreens) m.set(s.id, s);
+    return m;
+  }, [overlayScreens]);
+
+  const orderedScreens = useMemo(
+    () =>
+      orderIds
+        .map((id) => screensById.get(id))
+        .filter((s): s is (typeof overlayScreens)[number] => Boolean(s)),
+    [orderIds, screensById],
+  );
 
   const selected =
     config.screens.find((s) => s.id === selectedId && s.kind === "overlay") ??
@@ -93,6 +154,95 @@ export function ScreensTab({
   const presetLabel = (id: string) =>
     presets.find((p) => p.id === id)?.label ?? id;
 
+  const reorderScreens = async (nextIds: string[]) => {
+    const same =
+      nextIds.length === overlayScreens.length &&
+      nextIds.every((id, i) => id === overlayScreens[i]?.id);
+    if (same) return;
+    setBusy("Reordering");
+    try {
+      await api.reorderScreens(nextIds);
+      await reload();
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  /** Move `fromId` so its index matches where `clientY` falls in the list. */
+  const reorderByClientY = (
+    ids: string[],
+    fromId: string,
+    clientY: number,
+    itemEls: HTMLElement[],
+  ) => {
+    const from = ids.indexOf(fromId);
+    if (from < 0 || itemEls.length === 0) return ids;
+
+    // Insert before the first row whose midpoint is below the pointer;
+    // if below every midpoint, append at the end.
+    let insertAt = itemEls.length;
+    for (let i = 0; i < itemEls.length; i++) {
+      const r = itemEls[i]!.getBoundingClientRect();
+      if (clientY < (r.top + r.bottom) / 2) {
+        insertAt = i;
+        break;
+      }
+    }
+
+    const next = [...ids];
+    next.splice(from, 1);
+    if (from < insertAt) insertAt -= 1;
+    next.splice(insertAt, 0, fromId);
+    return next;
+  };
+
+  const onScreenPointerDown = (
+    e: React.PointerEvent<HTMLButtonElement>,
+    id: string,
+  ) => {
+    if (busy || e.button !== 0) return;
+    dragMoved.current = false;
+    dragRef.current = {
+      id,
+      startY: e.clientY,
+      originIds: orderIds,
+    };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+
+  const onScreenPointerMove = (e: React.PointerEvent<HTMLButtonElement>) => {
+    const drag = dragRef.current;
+    if (!drag) return;
+    if (Math.abs(e.clientY - drag.startY) < 5) return;
+    dragMoved.current = true;
+    setDragId(drag.id);
+
+    const list = e.currentTarget.closest(".screens-sidebar-list");
+    if (!list) return;
+    const items = [
+      ...list.querySelectorAll<HTMLElement>("[data-screen-id]"),
+    ];
+
+    setOrderIds((prev) => {
+      const next = reorderByClientY(prev, drag.id, e.clientY, items);
+      return next.join() === prev.join() ? prev : next;
+    });
+  };
+
+  const onScreenPointerUp = (e: React.PointerEvent<HTMLButtonElement>) => {
+    const drag = dragRef.current;
+    dragRef.current = null;
+    setDragId(null);
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      /* already released */
+    }
+    if (!drag || !dragMoved.current) return;
+    // Persist the live-reordered list.
+    void reorderScreens(orderIdsRef.current);
+  };
+
   const armDeleteOnce = () => {
     setArmDelete(true);
     if (armTimer.current) clearTimeout(armTimer.current);
@@ -113,6 +263,41 @@ export function ScreensTab({
       await reload();
       onSelect(res.screen.id);
       setVariantPresetId(primaryPresetId(res.screen));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const ingestFolder = async (input: {
+    dir: string;
+    sourceLocale: string;
+    detectText: boolean;
+    keyPrefix: string;
+  }) => {
+    setBusy("Importing folder");
+    setIngestReport(null);
+    try {
+      const res = await api.ingestScreens(input);
+      setShowIngest(false);
+      await reload();
+      const first = res.created[0];
+      if (first) {
+        onSelect(first.screen.id);
+        setVariantPresetId(primaryPresetId(first.screen));
+      }
+      const unmatched = res.created.filter((c) => c.headlineKey && !c.headlineMatched)
+        .length;
+      const merged = res.created.filter((c) => c.mergedVariant).length;
+      const screens = res.created.length - merged;
+      const parts = [
+        `${screens} screen${screens === 1 ? "" : "s"}`,
+        merged ? `+${merged} iPad/device variant${merged === 1 ? "" : "s"}` : null,
+        res.failed.length ? `${res.failed.length} failed` : null,
+        unmatched ? `${unmatched} keys not in catalog yet` : null,
+      ].filter(Boolean);
+      setIngestReport(parts.join(" · "));
+    } catch (err) {
+      setIngestReport(String((err as Error)?.message ?? err));
     } finally {
       setBusy(null);
     }
@@ -221,18 +406,36 @@ export function ScreensTab({
   return (
     <div className="tab-content screens-tab unified-screens">
       <aside className="screens-sidebar">
-        <div className="screens-sidebar-head">Screens</div>
-        <div className="screens-sidebar-list">
-          {overlayScreens.map((s) => {
+        <div className="screens-sidebar-head">
+          Screens
+          {overlayScreens.length > 1 && (
+            <span className="screens-sidebar-head-hint">Drag to set upload order</span>
+          )}
+        </div>
+        <div className={`screens-sidebar-list${dragId ? " is-reordering" : ""}`}>
+          {orderedScreens.map((s) => {
             const active = s.id === selected?.id;
             const ids = getScreenPresetIds(s, config.presetIds);
             const incomplete = ids.some((id) => !getOverlay(s, id));
+            const dragging = dragId === s.id;
             return (
               <button
                 key={s.id}
                 type="button"
-                className={`screens-sidebar-item${active ? " active" : ""}`}
-                onClick={() => onSelect(s.id)}
+                data-screen-id={s.id}
+                disabled={!!busy && !dragId}
+                className={`screens-sidebar-item${active ? " active" : ""}${dragging ? " dragging" : ""}`}
+                onClick={() => {
+                  if (dragMoved.current) {
+                    dragMoved.current = false;
+                    return;
+                  }
+                  onSelect(s.id);
+                }}
+                onPointerDown={(e) => onScreenPointerDown(e, s.id)}
+                onPointerMove={onScreenPointerMove}
+                onPointerUp={onScreenPointerUp}
+                onPointerCancel={onScreenPointerUp}
               >
                 <span className="screens-sidebar-name">{s.name}</span>
                 <span className={`screens-sidebar-meta${incomplete ? " warn" : ""}`}>
@@ -241,7 +444,7 @@ export function ScreensTab({
               </button>
             );
           })}
-          {!overlayScreens.length && (
+          {!orderedScreens.length && (
             <p className="hint" style={{ padding: "8px 10px", margin: 0 }}>
               No screens yet.
             </p>
@@ -255,6 +458,19 @@ export function ScreensTab({
           >
             + New screen
           </button>
+          <button
+            className="ghost"
+            style={{ width: "100%", marginTop: 6 }}
+            onClick={() => setShowIngest(true)}
+            disabled={!!busy}
+          >
+            Import folder…
+          </button>
+          {ingestReport && (
+            <p className="hint" style={{ margin: "8px 0 0", fontSize: 12 }}>
+              {ingestReport}
+            </p>
+          )}
         </div>
       </aside>
 
@@ -507,6 +723,14 @@ export function ScreensTab({
           }
           onClose={() => setShowUpload(false)}
           onCreate={create}
+        />
+      )}
+      {showIngest && (
+        <IngestFolderModal
+          baseLocale={summary.baseLocale}
+          busy={busy === "Importing folder"}
+          onClose={() => setShowIngest(false)}
+          onIngest={ingestFolder}
         />
       )}
     </div>

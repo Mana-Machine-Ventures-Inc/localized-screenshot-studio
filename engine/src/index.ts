@@ -6,9 +6,10 @@ import { readProject } from "./projectReader/index.js";
 import { readGlobalSettings } from "./store.js";
 import { captureEngine } from "./capture/capture.js";
 
-// Load a .env (for OPENAI_API_KEY etc.) from the repo root, the engine dir, or
-// the current working directory. Uses Node's built-in loader; missing files are
-// ignored. Real environment variables always take precedence.
+// Load a .env (optional OPENAI_API_KEY for local/dev) from the repo root, the
+// engine dir, or the current working directory. Packaged apps should set the key
+// in the UI (stored under ~/.lss). Missing files are ignored; real environment
+// variables always take precedence over file values.
 function loadEnvFiles(): void {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const candidates = [
@@ -40,7 +41,7 @@ try {
   const settings = readGlobalSettings();
   if (settings.lastProjectPath) {
     const data = readProject(settings.lastProjectPath);
-    store.open(data.projectPath);
+    store.open(data.projectPath, { appName: data.appName });
     store.setData(data);
     store.reconcileCells(data.locales);
     console.log(`[engine] reopened project: ${data.appName} (${data.projectPath})`);

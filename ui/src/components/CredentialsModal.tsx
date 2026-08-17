@@ -23,9 +23,9 @@ export function CredentialsModal({ onClose, onSave }: Props) {
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h3>App Store Connect credentials</h3>
         <div className="banner info">
-          The private key is stored outside the project (a Keychain stand-in
-          under <span className="mono">~/.lss/credentials</span>) and never
-          written to <span className="mono">project.json</span>.
+          The private key is stored on this Mac under{" "}
+          <span className="mono">~/.lss/credentials</span> and never written
+          to <span className="mono">project.json</span>.
         </div>
         <div className="field">
           <label>Issuer ID</label>

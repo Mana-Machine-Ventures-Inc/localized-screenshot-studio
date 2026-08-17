@@ -7,6 +7,8 @@ interface Props {
   onChanged: () => void;
   previewLocale: string;
   onPreviewLocale: (locale: string) => void;
+  hasOpenAI: boolean;
+  onEditOpenAI: () => void;
 }
 
 export function StringsTab({
@@ -14,6 +16,8 @@ export function StringsTab({
   onChanged,
   previewLocale,
   onPreviewLocale,
+  hasOpenAI,
+  onEditOpenAI,
 }: Props) {
   const [baseLocale, setBaseLocale] = useState("en");
   const [locales, setLocales] = useState<string[]>([]);
@@ -185,6 +189,10 @@ export function StringsTab({
   };
 
   const localizeRow = async (key: string, targets?: string[]) => {
+    if (!hasOpenAI) {
+      onEditOpenAI();
+      return;
+    }
     setLocalizing((p) => ({ ...p, [key]: true }));
     setRowStatus((p) => {
       const next = { ...p };
@@ -227,6 +235,10 @@ export function StringsTab({
   };
 
   const localizeAllMissing = async () => {
+    if (!hasOpenAI) {
+      onEditOpenAI();
+      return;
+    }
     const keys = keysWithMissing.map((s) => s.key);
     if (!keys.length) return;
     cancelBulk.current = false;
@@ -262,6 +274,10 @@ export function StringsTab({
   /** Re-translate the listed keys into EVERY language, overwriting existing
    * translations (used when the source changed but stale translations remain). */
   const retranslateAll = async () => {
+    if (!hasOpenAI) {
+      onEditOpenAI();
+      return;
+    }
     const keys = retranslatable.map((s) => s.key);
     if (!keys.length || !nonBaseLocales.length) return;
     cancelBulk.current = false;
@@ -356,17 +372,34 @@ export function StringsTab({
           </div>
         ) : (
           <>
+            {!hasOpenAI && (
+              <button
+                className="ghost"
+                onClick={onEditOpenAI}
+                title="Add an OpenAI API key to enable AI localization"
+              >
+                Add OpenAI key
+              </button>
+            )}
             <button
               className="ghost"
               onClick={() => void localizeAllMissing()}
-              disabled={!keysWithMissing.length}
-              title="Generate every missing translation with AI"
+              disabled={!keysWithMissing.length || !hasOpenAI}
+              title={
+                hasOpenAI
+                  ? "Generate every missing translation with AI"
+                  : "Add an OpenAI API key first"
+              }
             >
               Localize all missing ({keysWithMissing.length})
             </button>
             <button
               className={armRetrans ? "danger" : "ghost"}
-              disabled={!retranslatable.length || !nonBaseLocales.length}
+              disabled={
+                !retranslatable.length ||
+                !nonBaseLocales.length ||
+                !hasOpenAI
+              }
               onClick={() => {
                 if (armRetrans) {
                   setArmRetrans(false);
@@ -375,7 +408,11 @@ export function StringsTab({
                   armRetranslate();
                 }
               }}
-              title="Re-translate the listed strings into every language, overwriting existing translations (use after editing the source text)"
+              title={
+                hasOpenAI
+                  ? "Re-translate the listed strings into every language, overwriting existing translations (use after editing the source text)"
+                  : "Add an OpenAI API key first"
+              }
             >
               {armRetrans
                 ? `Overwrite ${retranslatable.length}×${nonBaseLocales.length}?`
@@ -471,9 +508,13 @@ export function StringsTab({
                     {miss.length > 0 ? (
                       <button
                         className="primary mini"
-                        disabled={isBusy || !!bulk}
+                        disabled={isBusy || !!bulk || !hasOpenAI}
                         onClick={() => void localizeRow(s.key, miss)}
-                        title={`Generate ${miss.join(", ")}`}
+                        title={
+                          hasOpenAI
+                            ? `Generate ${miss.join(", ")}`
+                            : "Add an OpenAI API key first"
+                        }
                       >
                         {isBusy
                           ? "Translating…"
@@ -486,9 +527,13 @@ export function StringsTab({
                       (s.values[baseLocale]?.trim() ?? "") !== "" && (
                         <button
                           className="mini ghost"
-                          disabled={isBusy || !!bulk}
+                          disabled={isBusy || !!bulk || !hasOpenAI}
                           onClick={() => void localizeRow(s.key, nonBaseLocales)}
-                          title="Re-translate every language from the default (overwrites existing translations)"
+                          title={
+                            hasOpenAI
+                              ? "Re-translate every language from the default (overwrites existing translations)"
+                              : "Add an OpenAI API key first"
+                          }
                         >
                           {isBusy ? "Translating…" : "↻ Retranslate"}
                         </button>

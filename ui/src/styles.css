@@ -111,6 +111,60 @@ textarea {
   color: var(--text);
 }
 
+.recent-projects {
+  margin-top: 16px;
+}
+.recent-projects-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.recent-projects-item {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+}
+.recent-projects-open {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  text-align: left;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev-2);
+  color: var(--text);
+  cursor: pointer;
+}
+.recent-projects-open:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev-2));
+}
+.recent-projects-open:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.recent-projects-name {
+  font-weight: 600;
+  font-size: 13px;
+}
+.recent-projects-path {
+  font-size: 11px;
+  color: var(--text-dim);
+  word-break: break-all;
+}
+.recent-projects-remove {
+  flex-shrink: 0;
+  align-self: center;
+  min-width: 28px;
+  padding: 4px 8px;
+}
+
 .stages {
   display: flex;
   gap: 6px;
@@ -1978,6 +2032,17 @@ table.matrix th.rowhead {
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--text-dim);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.screens-sidebar-head-hint {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-dim);
+  opacity: 0.85;
 }
 .screens-sidebar-list {
   flex: 1;
@@ -2000,6 +2065,11 @@ table.matrix th.rowhead {
   border-radius: 8px;
   background: transparent;
   color: var(--text);
+  cursor: grab;
+  touch-action: none;
+}
+.screens-sidebar-item:active {
+  cursor: grabbing;
 }
 .screens-sidebar-item:hover:not(:disabled) {
   background: var(--bg-elev-2);
@@ -2008,6 +2078,18 @@ table.matrix th.rowhead {
 .screens-sidebar-item.active {
   background: color-mix(in srgb, var(--accent) 16%, transparent);
   border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+.screens-sidebar-item.dragging {
+  opacity: 0.55;
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-elev-2));
+  z-index: 1;
+}
+.screens-sidebar-list.is-reordering {
+  user-select: none;
+}
+.screens-sidebar-list.is-reordering .screens-sidebar-item {
+  cursor: grabbing;
 }
 .screens-sidebar-name {
   font-weight: 600;

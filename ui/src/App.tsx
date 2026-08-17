@@ -7,12 +7,14 @@ import type {
   UploadJobItem,
 } from "./types";
 import { CredentialsModal } from "./components/CredentialsModal";
+import { OpenAIModal } from "./components/OpenAIModal";
 import { OverviewTab } from "./tabs/OverviewTab";
-import { ProjectTab } from "./tabs/ProjectTab";
+import { ProjectTab, type RecentProjectItem } from "./tabs/ProjectTab";
 import { StringsTab } from "./tabs/StringsTab";
 import { ScreensTab } from "./tabs/ScreensTab";
 import { GenerateTab } from "./tabs/GenerateTab";
 import { UploadTab } from "./tabs/UploadTab";
+import { pickXcodeProject } from "./pickProject";
 
 const TABS = [
   "Overview",
@@ -51,7 +53,10 @@ export function App() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string>();
   const [hasCreds, setHasCreds] = useState(false);
+  const [hasOpenAI, setHasOpenAI] = useState(false);
   const [showCreds, setShowCreds] = useState(false);
+  const [showOpenAI, setShowOpenAI] = useState(false);
+  const [recentProjects, setRecentProjects] = useState<RecentProjectItem[]>([]);
   const [job, setJob] = useState<UploadJob | null>(null);
   const [tab, setTabState] = useState<Tab>(readStoredTab);
   const [tick, setTick] = useState(0);
@@ -121,6 +126,21 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [summary]);
 
+  async function refreshGlobalStatus() {
+    try {
+      const [asc, openai, settings] = await Promise.all([
+        api.ascStatus(),
+        api.openaiStatus(),
+        api.getGlobalSettings(),
+      ]);
+      setHasCreds(asc.hasCredentials);
+      setHasOpenAI(openai.configured);
+      setRecentProjects(settings.recentProjects ?? []);
+    } catch {
+      /* engine may still be booting */
+    }
+  }
+
   async function reload() {
     const p = await api.getProject();
     // Keep the last open project in UI state if the engine briefly reports
@@ -131,6 +151,7 @@ export function App() {
     });
     if (p.open && p.data) setSummary(p.data);
     setTick((t) => t + 1);
+    await refreshGlobalStatus();
   }
 
   // Connect to the engine, retrying while it's still booting (it can start a
@@ -146,10 +167,6 @@ export function App() {
         await reload();
         if (cancelled) return;
         api.getPresets().then(setPresets).catch(() => {});
-        api
-          .ascStatus()
-          .then((s) => setHasCreds(s.hasCredentials))
-          .catch(() => {});
         // Do not force Overview here — reconnect / HMR remount used to reset
         // the tab mid-Generate. Tab is restored from localStorage; openProject
         // still lands on Overview intentionally.
@@ -187,6 +204,18 @@ export function App() {
       setTab("Overview");
     });
 
+  const browseProject = async () => {
+    const picked = await pickXcodeProject();
+    if (!picked) return;
+    openProject(picked);
+  };
+
+  const removeRecent = (path: string) =>
+    run("Updating recents", async () => {
+      const r = await api.removeRecentProject(path);
+      setRecentProjects(r.recentProjects ?? []);
+    });
+
   const setBaseLocale = (locale: string) =>
     run("Updating settings", async () => {
       await api.setSettings({ baseLocale: locale });
@@ -218,6 +247,22 @@ export function App() {
       const s = await api.ascStatus();
       setHasCreds(s.hasCredentials);
       await reload();
+    });
+
+  const saveOpenAI = (input: Parameters<typeof api.saveOpenAI>[0]) =>
+    run("Saving OpenAI key", async () => {
+      await api.saveOpenAI(input);
+      setShowOpenAI(false);
+      const s = await api.openaiStatus();
+      setHasOpenAI(s.configured);
+    });
+
+  const clearOpenAI = () =>
+    run("Removing OpenAI key", async () => {
+      await api.clearOpenAI();
+      setShowOpenAI(false);
+      const s = await api.openaiStatus();
+      setHasOpenAI(s.configured);
     });
 
   const startUpload = (opts: Parameters<typeof api.upload>[0], label: string) =>
@@ -357,9 +402,11 @@ export function App() {
             summary={summary}
             presets={presets}
             hasCreds={hasCreds}
+            hasOpenAI={hasOpenAI}
             reloadToken={tick}
             onNavigate={(t) => setTab(t as Tab)}
             onEditCredentials={() => setShowCreds(true)}
+            onEditOpenAI={() => setShowOpenAI(true)}
           />
         )}
 
@@ -371,12 +418,17 @@ export function App() {
             presets={presets}
             busy={busy}
             hasCreds={hasCreds}
+            hasOpenAI={hasOpenAI}
+            recentProjects={recentProjects}
             onOpenProject={openProject}
+            onBrowseProject={() => void browseProject()}
+            onRemoveRecent={(p) => void removeRecent(p)}
             onSetBaseLocale={setBaseLocale}
             onSetDevices={setProjectDevices}
             onSetMetadata={setMetadata}
             onSetAscVersion={setAscVersion}
             onEditCredentials={() => setShowCreds(true)}
+            onEditOpenAI={() => setShowOpenAI(true)}
           />
         )}
 
@@ -386,6 +438,8 @@ export function App() {
             onChanged={() => reload().catch(() => {})}
             previewLocale={previewLocale}
             onPreviewLocale={setPreviewLocale}
+            hasOpenAI={hasOpenAI}
+            onEditOpenAI={() => setShowOpenAI(true)}
           />
         )}
 
@@ -432,6 +486,14 @@ export function App() {
 
       {showCreds && (
         <CredentialsModal onClose={() => setShowCreds(false)} onSave={saveCreds} />
+      )}
+      {showOpenAI && (
+        <OpenAIModal
+          configured={hasOpenAI}
+          onClose={() => setShowOpenAI(false)}
+          onSave={saveOpenAI}
+          onClear={() => void clearOpenAI()}
+        />
       )}
     </div>
   );

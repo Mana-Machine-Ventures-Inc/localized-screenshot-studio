@@ -12,8 +12,8 @@ export interface SaveCredentialsInput {
 }
 
 /**
- * Persist the ASC private key OUTSIDE the project (a Keychain stand-in under
- * ~/.lss/credentials) and store only a redacted reference in project.json.
+ * Persist the ASC private key OUTSIDE the project (~/.lss/credentials) and
+ * store only a redacted reference in project.json.
  */
 export function saveCredentials(input: SaveCredentialsInput): void {
   fs.writeFileSync(credentialFile(input.appId), input.privateKey, {

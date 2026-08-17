@@ -161,6 +161,21 @@ export function CompositionPanel({
     update({ background: bg });
   };
 
+  const sampleTheme = async () => {
+    setBusy("Sampling theme");
+    try {
+      const res = await api.applyScreenTheme(screen.id, variantPresetId);
+      setComp((prev) => ({
+        ...prev,
+        background: res.theme.background,
+        headlineColor: res.theme.headlineColor,
+      }));
+      onChanged();
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const updateUniversal = (patch: Partial<CompositorConfig>) => {
     setTypo((prev) => ({ ...prev, ...patch }));
     pendingUniversal.current = { ...pendingUniversal.current, ...patch };
@@ -443,6 +458,20 @@ export function CompositionPanel({
                   />
                 </div>
               </div>
+            )}
+            {hasOverlay && (
+              <button
+                type="button"
+                className="ghost mini"
+                style={{ marginTop: 6 }}
+                disabled={!!busy}
+                onClick={() => void sampleTheme()}
+                title="Derive background + headline color from the screenshot"
+              >
+                {busy === "Sampling theme"
+                  ? "Sampling…"
+                  : "Sample from screenshot"}
+              </button>
             )}
           </>
         )}

@@ -121,7 +121,10 @@ async function buildSlots(
 export interface CreateOverlayInput {
   name: string;
   sourceLocale?: string;
-  imageDataUrl: string;
+  /** Base64 data URL of the screenshot. Required unless `imagePath` is set. */
+  imageDataUrl?: string;
+  /** Absolute path to an image on disk (preferred for folder ingest). */
+  imagePath?: string;
   presetId?: string;
   /** When true, run OCR and create text slots. Default false. */
   detectText?: boolean;
@@ -134,6 +137,23 @@ export interface OverlayResult {
   matchedCount: number;
 }
 
+function loadImageBuffer(input: CreateOverlayInput): { buffer: Buffer; ext: string } {
+  if (input.imagePath) {
+    const abs = path.resolve(input.imagePath);
+    if (!fs.existsSync(abs)) throw new Error(`Image not found: ${abs}`);
+    const ext = path.extname(abs).replace(/^\./, "").toLowerCase() || "png";
+    const normalized =
+      ext === "jpeg" || ext === "jpg"
+        ? "jpg"
+        : ext === "webp"
+          ? "webp"
+          : "png";
+    return { buffer: fs.readFileSync(abs), ext: normalized };
+  }
+  if (input.imageDataUrl) return decodeDataUrl(input.imageDataUrl);
+  throw new Error("imageDataUrl or imagePath is required");
+}
+
 /** Upload a screenshot, optionally detect text, build a plate, save screen. */
 export async function createOverlayScreen(
   input: CreateOverlayInput,
@@ -144,7 +164,7 @@ export async function createOverlayScreen(
   const sourceLocale = input.sourceLocale ?? cfg.baseLocale;
   const runOcr = Boolean(input.detectText);
 
-  const { buffer, ext } = decodeDataUrl(input.imageDataUrl);
+  const { buffer, ext } = loadImageBuffer(input);
   const id = uniqueScreenId(slugify(input.name));
 
   const sharp = (await import("sharp")).default;
@@ -326,15 +346,20 @@ export async function updateOverlayScreen(
 /** Replace a variant's source screenshot or attach the first one. */
 export async function replaceOverlaySource(
   screenId: string,
-  imageDataUrl: string,
+  imageDataUrl: string | undefined,
   reocr: boolean,
   presetId?: string,
+  imagePath?: string,
 ): Promise<ScreenTemplate> {
   let screen = store.getScreen(screenId);
   if (!screen) throw new Error(`Unknown screen: ${screenId}`);
   const pid = presetId ?? primaryPresetId(screen);
   const paths = store.getPaths();
-  const { buffer, ext } = decodeDataUrl(imageDataUrl);
+  const { buffer, ext } = loadImageBuffer({
+    name: screenId,
+    imageDataUrl,
+    imagePath,
+  });
   fs.mkdirSync(paths.overlayDir, { recursive: true });
 
   let overlay = getOverlay(screen, pid);

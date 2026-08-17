@@ -2,7 +2,19 @@
   "name": "localized-screenshot-studio",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "Visual desktop studio for generating, framing, and uploading localized App Store screenshots and release notes without fastlane or Xcode UI automation.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Mana-Machine-Ventures-Inc/localized-screenshot-studio.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Mana-Machine-Ventures-Inc/localized-screenshot-studio/issues"
+  },
+  "homepage": "https://github.com/Mana-Machine-Ventures-Inc/localized-screenshot-studio#readme",
+  "engines": {
+    "node": ">=18"
+  },
   "type": "module",
   "workspaces": [
     "engine",

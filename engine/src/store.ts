@@ -40,7 +40,16 @@ export const DEFAULT_COMPOSITOR: CompositorConfig = {
 
 interface GlobalSettings {
   lastProjectPath?: string;
+  recentProjects?: RecentProject[];
 }
+
+export interface RecentProject {
+  path: string;
+  appName?: string;
+  openedAt: string;
+}
+
+const MAX_RECENT_PROJECTS = 12;
 
 /**
  * Single in-memory project session, persisted to `<project>/.lss/project.json`.
@@ -74,7 +83,7 @@ class Store {
     this.data = data;
   }
 
-  open(root: string): ProjectConfig {
+  open(root: string, opts?: { appName?: string }): ProjectConfig {
     const paths = ensureProjectDirs(root);
     this.paths = paths;
     if (fs.existsSync(paths.projectFile)) {
@@ -102,7 +111,7 @@ class Store {
       };
       this.save();
     }
-    this.rememberLastProject(root);
+    this.rememberLastProject(root, opts?.appName);
     return this.config;
   }
 
@@ -133,6 +142,26 @@ class Store {
     const cfg = this.getConfig();
     cfg.screens = cfg.screens.filter((s) => s.id !== id);
     cfg.cells = cfg.cells.filter((c) => c.screenId !== id);
+    this.save();
+  }
+
+  /**
+   * Reorder screens. Upload uses this array order within each App Store
+   * screenshot set, so dragging the sidebar list controls ASC upload order.
+   */
+  reorderScreens(screenIds: string[]): void {
+    const cfg = this.getConfig();
+    const byId = new Map(cfg.screens.map((s) => [s.id, s]));
+    const next: typeof cfg.screens = [];
+    for (const id of screenIds) {
+      const s = byId.get(id);
+      if (s) {
+        next.push(s);
+        byId.delete(id);
+      }
+    }
+    for (const s of byId.values()) next.push(s);
+    cfg.screens = next;
     this.save();
   }
 
@@ -513,10 +542,21 @@ class Store {
     return entry;
   }
 
-  private rememberLastProject(root: string): void {
+  private rememberLastProject(root: string, appName?: string): void {
     const settings = readGlobalSettings();
     settings.lastProjectPath = root;
-    fs.writeFileSync(globalSettingsFile(), JSON.stringify(settings, null, 2));
+    const existing = settings.recentProjects ?? [];
+    const prior = existing.find((r) => r.path === root);
+    const next: RecentProject = {
+      path: root,
+      appName: appName ?? prior?.appName,
+      openedAt: new Date().toISOString(),
+    };
+    settings.recentProjects = [
+      next,
+      ...existing.filter((r) => r.path !== root),
+    ].slice(0, MAX_RECENT_PROJECTS);
+    writeGlobalSettings(settings);
   }
 }
 
@@ -534,6 +574,20 @@ export function readGlobalSettings(): GlobalSettings {
   } catch {
     return {};
   }
+}
+
+export function writeGlobalSettings(settings: GlobalSettings): void {
+  fs.writeFileSync(globalSettingsFile(), JSON.stringify(settings, null, 2));
+}
+
+/** Drop a path from the recent-projects list (does not close the current project). */
+export function removeRecentProject(projectPath: string): GlobalSettings {
+  const settings = readGlobalSettings();
+  settings.recentProjects = (settings.recentProjects ?? []).filter(
+    (r) => r.path !== projectPath,
+  );
+  writeGlobalSettings(settings);
+  return settings;
 }
 
 export function pathsFor(root: string): ProjectPaths {

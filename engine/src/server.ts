@@ -2,7 +2,7 @@ import path from "node:path";
 import fs from "node:fs";
 import express, { type Request, type Response } from "express";
 import cors from "cors";
-import { store, cellId } from "./store.js";
+import { store, cellId, readGlobalSettings, removeRecentProject } from "./store.js";
 import { readProject } from "./projectReader/index.js";
 import { PRESETS, getPreset } from "./capture/presets.js";
 import { captureEngine, captureScreenLocale } from "./capture/capture.js";
@@ -19,12 +19,20 @@ import {
   addScreenVariant,
   removeScreenVariant,
 } from "./overlay/index.js";
+import { ingestScreens } from "./overlay/ingest.js";
+import { sampleFrameTheme } from "./overlay/themeColor.js";
 import {
   primaryPresetId,
   setVariantComposition,
 } from "./screens/variants.js";
 import { localizeKey } from "./strings/localize.js";
 import { saveCredentials, loadCredentials } from "./asc/credentials.js";
+import {
+  saveOpenAIConfig,
+  clearOpenAIConfig,
+  hasOpenAIConfig,
+  resolveOpenAI,
+} from "./openai/credentials.js";
 import {
   cancelUploadJob,
   createUploadJob,
@@ -78,7 +86,7 @@ export function createServer() {
       const { path: projectPath } = req.body as { path: string };
       if (!projectPath) throw new Error("path is required");
       const data = readProject(projectPath);
-      store.open(data.projectPath);
+      store.open(data.projectPath, { appName: data.appName });
       store.setData(data);
       const cfg = store.getConfig();
       cfg.baseLocale = data.baseLocale;
@@ -94,6 +102,28 @@ export function createServer() {
     }
     res.json({ open: true, config: store.getConfig(), data: summarize() });
   });
+
+  // Global machine settings (recent projects) — not per-Xcode-project.
+  app.get("/api/settings", (_req, res) => {
+    const s = readGlobalSettings();
+    res.json({
+      lastProjectPath: s.lastProjectPath,
+      recentProjects: s.recentProjects ?? [],
+    });
+  });
+
+  app.delete(
+    "/api/settings/recent",
+    asyncRoute(async (req, res) => {
+      const { path: projectPath } = req.body as { path?: string };
+      if (!projectPath) throw new Error("path is required");
+      const s = removeRecentProject(projectPath);
+      res.json({
+        ok: true,
+        recentProjects: s.recentProjects ?? [],
+      });
+    }),
+  );
 
   app.put(
     "/api/project/settings",
@@ -265,6 +295,60 @@ export function createServer() {
     }),
   );
 
+  /**
+   * Bulk-import screenshots from a folder (or explicit file list). Samples each
+   * image's theme colors for the promo frame + headline, and links headline
+   * keys from filenames (`appstore.ios_2.png` or `ios/2.png`).
+   */
+  app.post(
+    "/api/screens/ingest",
+    asyncRoute(async (req, res) => {
+      const result = await ingestScreens(req.body ?? {});
+      for (const item of result.created) {
+        for (const c of store.getConfig().cells) {
+          if (c.screenId === item.screen.id && c.state === "pending") {
+            store.upsertCell({ ...c, state: "generated" });
+          }
+        }
+      }
+      res.json({
+        ...result,
+        config: store.getConfig(),
+        data: summarize(),
+      });
+    }),
+  );
+
+  /** Sample promo-frame theme colors from an existing overlay source image. */
+  app.post(
+    "/api/screens/:id/theme",
+    asyncRoute(async (req, res) => {
+      const screen = store.getScreen(req.params.id);
+      if (!screen) throw new Error("Unknown screen");
+      const { presetId, apply } = req.body as {
+        presetId?: string;
+        apply?: boolean;
+      };
+      const pid = presetId ?? primaryPresetId(screen);
+      const abs = overlayImagePath(req.params.id, "source", pid);
+      if (!abs) throw new Error("No source image for this screen/variant");
+      const theme = await sampleFrameTheme(abs);
+      if (apply) {
+        const current = effectiveComposition(screen, pid);
+        const next = setVariantComposition(screen, pid, {
+          ...current,
+          background: theme.background,
+          headlineColor: theme.headlineColor,
+        });
+        next.updatedAt = new Date().toISOString();
+        store.upsertScreen(next);
+        res.json({ theme, screen: store.getScreen(req.params.id) });
+        return;
+      }
+      res.json({ theme });
+    }),
+  );
+
   app.put(
     "/api/overlay/screens/:id",
     asyncRoute(async (req, res) => {
@@ -342,6 +426,19 @@ export function createServer() {
     "/api/screens/:id",
     asyncRoute(async (req, res) => {
       store.removeScreen(req.params.id);
+      res.json({ ok: true, config: store.getConfig() });
+    }),
+  );
+
+  // Reorder screens — App Store upload follows this list order.
+  app.put(
+    "/api/screens/order",
+    asyncRoute(async (req, res) => {
+      const { screenIds } = req.body as { screenIds?: string[] };
+      if (!Array.isArray(screenIds) || !screenIds.length) {
+        throw new Error("screenIds is required");
+      }
+      store.reorderScreens(screenIds);
       res.json({ ok: true, config: store.getConfig() });
     }),
   );
@@ -538,6 +635,51 @@ export function createServer() {
       res.json({ ok: true, ref: store.getConfig().asc });
     }),
   );
+
+  // ---- OpenAI (machine-local key for localize / OCR fallback) -----------
+  app.get("/api/openai", (_req, res) => {
+    const resolved = resolveOpenAI();
+    res.json({
+      configured: hasOpenAIConfig(),
+      source: resolved?.source ?? null,
+      model: resolved?.model,
+    });
+  });
+
+  app.put(
+    "/api/openai",
+    asyncRoute(async (req, res) => {
+      const body = req.body as {
+        apiKey?: string;
+        baseUrl?: string;
+        model?: string;
+      };
+      if (!body.apiKey?.trim()) throw new Error("apiKey is required");
+      saveOpenAIConfig({
+        apiKey: body.apiKey,
+        baseUrl: body.baseUrl,
+        model: body.model,
+      });
+      const resolved = resolveOpenAI();
+      res.json({
+        ok: true,
+        configured: true,
+        source: resolved?.source ?? "file",
+        model: resolved?.model,
+      });
+    }),
+  );
+
+  app.delete("/api/openai", (_req, res) => {
+    clearOpenAIConfig();
+    const resolved = resolveOpenAI();
+    res.json({
+      ok: true,
+      configured: hasOpenAIConfig(),
+      source: resolved?.source ?? null,
+      model: resolved?.model,
+    });
+  });
 
   // Pin / clear the ASC marketing version uploads attach to (no credential change).
   app.put(

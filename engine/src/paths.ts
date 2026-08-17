@@ -3,9 +3,8 @@ import os from "node:os";
 import fs from "node:fs";
 
 /**
- * All studio state for a given app lives in `<xcodeProjectDir>/.lss/` so that
- * generated templates are version-controlled alongside the app, exactly as the
- * plan specifies. Secrets (ASC private keys) are kept out of the project dir.
+ * All studio state for a given app lives in `<xcodeProjectDir>/.lss/` so
+ * layouts can sit alongside the Xcode project. Secrets stay out of this tree.
  */
 export interface ProjectPaths {
   root: string; // the opened xcode project directory
@@ -63,12 +62,20 @@ export function globalSettingsFile(): string {
 }
 
 /**
- * Stand-in for the OS keychain. Private keys are stored here (outside the
- * project, gitignored by virtue of living in the home dir) keyed by appId.
- * In a shipped build this is replaced by the macOS Keychain.
+ * Machine-local ASC private key (outside the Xcode project). Files are
+ * mode 0600 under ~/.lss/credentials — never in project.json. A packaged
+ * .app could move this to the macOS Keychain later; this is the store today.
  */
 export function credentialFile(appId: string): string {
   const dir = path.join(globalDir(), "credentials");
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   return path.join(dir, `${appId.replace(/[^\w.-]/g, "_")}.p8`);
+}
+
+/**
+ * Machine-local OpenAI API key (outside any Xcode project). Same ~/.lss
+ * file store as ASC credentials — never written to project.json.
+ */
+export function openaiConfigFile(): string {
+  return path.join(globalDir(), "openai.json");
 }
